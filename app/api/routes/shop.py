@@ -229,12 +229,15 @@ async def update_order_status(order_id: str, payload: dict, admin: dict = Depend
 class ProductCreate(BaseModel):
     name:               str
     description:        Optional[str] = None
+    full_description:   Optional[str] = None
     price:              float
     category:           str
     stock:              int = 0
     is_featured:        bool = False
     tag:                Optional[str] = None
     image_url:          Optional[str] = None
+    extra_images:       Optional[List[str]] = []
+    video_url:          Optional[str] = None
     wholesale_enabled:  bool = False
     wholesale_min_qty:  int = 6
     wholesale_price:    Optional[float] = None
@@ -244,14 +247,17 @@ class ProductCreate(BaseModel):
 async def create_product(payload: ProductCreate, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
     result = sb.table("products").insert({
-        "name":        payload.name,
-        "description": payload.description,
-        "price":       payload.price,
-        "category":    payload.category,
-        "stock":       payload.stock,
-        "is_featured": payload.is_featured,
-        "tag":         payload.tag,
-        "image_url":   payload.image_url,
+        "name":             payload.name,
+        "description":      payload.description,
+        "full_description": payload.full_description,
+        "price":            payload.price,
+        "category":         payload.category,
+        "stock":            payload.stock,
+        "is_featured":      payload.is_featured,
+        "tag":              payload.tag,
+        "image_url":        payload.image_url,
+        "extra_images":     payload.extra_images or [],
+        "video_url":        payload.video_url,
         "wholesale_enabled": payload.wholesale_enabled,
         "wholesale_min_qty": payload.wholesale_min_qty,
         "wholesale_price":   payload.wholesale_price,
@@ -263,14 +269,21 @@ async def create_product(payload: ProductCreate, admin: dict = Depends(require_a
 async def update_product(product_id: str, payload: ProductCreate, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
     sb.table("products").update({
-        "name":        payload.name,
-        "description": payload.description,
-        "price":       payload.price,
-        "category":    payload.category,
-        "stock":       payload.stock,
-        "is_featured": payload.is_featured,
-        "tag":         payload.tag,
-        "image_url":   payload.image_url,
+        "name":             payload.name,
+        "description":      payload.description,
+        "full_description": payload.full_description,
+        "price":            payload.price,
+        "category":         payload.category,
+        "stock":            payload.stock,
+        "is_featured":      payload.is_featured,
+        "tag":              payload.tag,
+        "image_url":        payload.image_url,
+        "extra_images":     payload.extra_images or [],
+        "video_url":        payload.video_url,
+        "wholesale_enabled": payload.wholesale_enabled,
+        "wholesale_min_qty": payload.wholesale_min_qty,
+        "wholesale_price":   payload.wholesale_price,
+        "wholesale_label":   payload.wholesale_label,
     }).eq("id", product_id).execute()
     return {"message": "Product updated"}
 
@@ -291,6 +304,43 @@ async def upload_product_image(
     if ext not in ['jpg', 'jpeg', 'png', 'webp']:
         raise HTTPException(400, "Only JPG, PNG or WebP allowed")
     path = f"products/{uuid.uuid4()}.{ext}"
+    sb.storage.from_("product-images").upload(
+        path, contents,
+        file_options={"content-type": file.content_type, "upsert": "true"}
+    )
+    url = sb.storage.from_("product-images").get_public_url(path)
+    return {"url": url}
+@router.delete("/products/admin/delete-image")
+async def delete_product_image(payload: dict, admin: dict = Depends(require_admin)):
+    sb = get_supabase_admin()
+    url = payload.get("url", "")
+    if not url:
+        raise HTTPException(400, "URL required")
+    # Extract storage path from full URL
+    path = url.split("/product-images/")[-1]
+    # Remove from storage
+    try:
+        sb.storage.from_("product-images").remove([path])
+    except Exception as e:
+        raise HTTPException(500, f"Storage delete failed: {str(e)}")
+    return {"message": "Image deleted from storage"}
+
+@router.delete("/products/admin/delete-video")
+async def delete_product_video(product_id: str, admin: dict = Depends(require_admin)):
+    sb = get_supabase_admin()
+    sb.table("products").update({"video_url": None}).eq("id", product_id).execute()
+    return {"message": "Video removed"}
+@router.post("/products/admin/upload-extra-image")
+async def upload_extra_image(
+    file: UploadFile = File(...),
+    admin: dict = Depends(require_admin)
+):
+    sb = get_supabase_admin()
+    contents = await file.read()
+    ext = file.filename.split('.')[-1].lower()
+    if ext not in ['jpg', 'jpeg', 'png', 'webp']:
+        raise HTTPException(400, "Only JPG, PNG or WebP allowed")
+    path = f"products/extra/{uuid.uuid4()}.{ext}"
     sb.storage.from_("product-images").upload(
         path, contents,
         file_options={"content-type": file.content_type, "upsert": "true"}
