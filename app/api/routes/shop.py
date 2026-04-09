@@ -36,10 +36,16 @@ async def get_products(
 @router.get("/products/{product_id}")
 async def get_product(product_id: str):
     sb = get_supabase_admin()
-    product = sb.table("products").select("*").eq("id", product_id).single().execute().data
+    # Try UUID lookup first, then fall back to slug
+    import re
+    uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    if uuid_pattern.match(product_id):
+        product = sb.table("products").select("*").eq("id", product_id).execute().data
+    else:
+        product = sb.table("products").select("*").eq("slug", product_id).execute().data
     if not product:
         raise HTTPException(404, "Product not found")
-    return product
+    return product[0]
 
 @router.get("/bundles")
 async def get_bundles():
@@ -228,6 +234,7 @@ async def update_order_status(order_id: str, payload: dict, admin: dict = Depend
 
 class ProductCreate(BaseModel):
     name:               str
+    slug:               Optional[str] = None
     description:        Optional[str] = None
     full_description:   Optional[str] = None
     price:              float
@@ -246,8 +253,11 @@ class ProductCreate(BaseModel):
 @router.post("/products/admin")
 async def create_product(payload: ProductCreate, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
+    import re
+    slug = payload.slug or re.sub(r'\s+', '-', re.sub(r'[^a-z0-9\s-]', '', payload.name.lower().strip()))
     result = sb.table("products").insert({
         "name":             payload.name,
+        "slug":             slug,
         "description":      payload.description,
         "full_description": payload.full_description,
         "price":            payload.price,
@@ -268,8 +278,11 @@ async def create_product(payload: ProductCreate, admin: dict = Depends(require_a
 @router.patch("/products/admin/{product_id}")
 async def update_product(product_id: str, payload: ProductCreate, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
+    import re
+    slug = payload.slug or re.sub(r'\s+', '-', re.sub(r'[^a-z0-9\s-]', '', payload.name.lower().strip()))
     sb.table("products").update({
         "name":             payload.name,
+        "slug":             slug,
         "description":      payload.description,
         "full_description": payload.full_description,
         "price":            payload.price,
