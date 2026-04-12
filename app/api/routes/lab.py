@@ -31,6 +31,11 @@ class PingPayload(BaseModel):
     device_fingerprint: str
     institution_id: Optional[str] = None
 
+class WhiteboardSavePayload(BaseModel):
+    session_id: str
+    page_index: int
+    json_data: dict
+
 
 # ─── ADMIN: Institutions ───────────────────────────────────────────────────────
 
@@ -196,3 +201,24 @@ async def get_active_sessions(institution_id: str, admin: dict = Depends(require
         "institution_id", institution_id
     ).execute().data or []
     return {"active_count": len(active), "sessions": active}
+# ─── WHITEBOARD: Save and Load (Fixes the 404 errors) ──────────────────────────
+
+@router.post("/whiteboard/save")
+async def save_whiteboard(payload: WhiteboardSavePayload):
+    sb = get_supabase_admin()
+    data = {
+        "session_id": payload.session_id,
+        "page_index": payload.page_index,
+        "json_data":  payload.json_data,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    # This matches the names used in your index.html fetch call
+    sb.table("lab_whiteboard_pages").upsert(data, on_conflict="session_id,page_index").execute()
+    return {"ok": True}
+
+@router.get("/whiteboard/{session_id}")
+async def get_whiteboard(session_id: str):
+    sb = get_supabase_admin()
+    # This fetches the saved drawings when you refresh the page
+    result = sb.table("lab_whiteboard_pages").select("json_data").eq("session_id", session_id).order("page_index").execute()
+    return result.data or []
