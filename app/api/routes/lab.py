@@ -157,7 +157,8 @@ async def validate_token(token: str, payload: ValidatePayload):
     return {
         "valid": True,
         "buyer_name": record["buyer_name"],
-        "institution": inst["name"] if inst else None,
+        "institution_id": inst["id"] if inst else None,
+        "institution_name": inst["name"] if inst else None,
     }
 
 

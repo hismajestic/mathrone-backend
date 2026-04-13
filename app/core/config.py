@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     storage_bucket_materials: str = "session-materials"
     max_upload_size_mb: int = 10
 
+    # AI — Groq (free tier)
+    gemini_api_key: str = ""  # kept for backwards compat
+    groq_api_key: str = ""
+
     @property
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",")]

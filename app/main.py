@@ -17,6 +17,7 @@ from app.api.routes.routes import (
 from app.api.routes.progress import router as progress_router
 from app.api.routes.forum import router as forum_router
 from app.api.routes.lab import router as lab_router
+from app.api.routes.quiz import router as quiz_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -47,6 +48,10 @@ All protected endpoints require `Authorization: Bearer <access_token>`.
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+origins = [
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
 
 # ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
@@ -56,6 +61,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# GZip compression — reduces API response size by ~70%
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 V1 = "/api/v1"
@@ -72,6 +81,7 @@ app.include_router(news_router, prefix=V1)
 app.include_router(exam_router, prefix="/api/v1")
 app.include_router(shop_router, prefix="/api/v1")
 app.include_router(lab_router, prefix="/api/v1")
+app.include_router(quiz_router, prefix="/api/v1")
 
 
 @app.get("/", tags=["Health"])

@@ -543,6 +543,15 @@ async def get_contact_messages(admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
     return sb.table("contact_messages").select("*").order("created_at", desc=True).execute().data or []
 
+@router.delete("/contact-messages/{message_id}", response_model=MessageResponse)
+async def delete_contact_message(
+    message_id: str,
+    admin: dict = Depends(require_admin)
+):
+    sb = get_supabase_admin()
+    sb.table("contact_messages").delete().eq("id", message_id).execute()
+    return MessageResponse(message="Message deleted")
+
 class ContactReply(BaseModel):
     id:      str
     email:   EmailStr
@@ -591,3 +600,22 @@ async def set_recruiting_status(
         "updated_at": "now()"
     }).execute()
     return { "message": "Recruiting status updated" }
+
+@router.get("/settings/quiz")
+async def get_quiz_status():
+    sb = get_supabase_admin()
+    result = sb.table("platform_settings").select("value").eq("key", "quiz_enabled").single().execute().data
+    return { "quiz_enabled": result["value"] != "false" if result else True }
+
+@router.patch("/settings/quiz")
+async def set_quiz_status(
+    payload: dict,
+    admin: dict = Depends(require_admin)
+):
+    sb = get_supabase_admin()
+    sb.table("platform_settings").upsert({
+        "key": "quiz_enabled",
+        "value": "true" if payload.get("quiz_enabled") else "false",
+        "updated_at": "now()"
+    }).execute()
+    return { "message": "Quiz status updated" }
