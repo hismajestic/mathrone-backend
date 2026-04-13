@@ -87,3 +87,6 @@ async def root():
 @app.get("/health", tags=["Health"])
 async def health():
     return {"status": "healthy"}
+@app.get("/api/v1/health")
+def health():
+    return {"ok": True, "service": "mathrone-backend"}
