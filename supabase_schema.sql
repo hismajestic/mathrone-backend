@@ -597,3 +597,9 @@ BEGIN
   END IF;
 END;
 $$;
+
+-- ============================================================
+-- MAJESTIC HUB: Add session_id to lab_tokens
+-- Run this in Supabase SQL Editor if lab_tokens table already exists
+-- ============================================================
+ALTER TABLE public.lab_tokens ADD COLUMN IF NOT EXISTS session_id TEXT;

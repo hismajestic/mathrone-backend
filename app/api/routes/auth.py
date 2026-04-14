@@ -367,8 +367,8 @@ async def get_platform_stats():
     ratings  = [t["rating"] for t in rating.data if t.get("rating")]
     avg      = round(sum(ratings) / len(ratings), 1) if ratings else 4.8
     return {
-        "tutors":   (tutors.count or 0) + 20,
-        "students": (students.count or 0) + 100,
+        "tutors":   tutors.count or 0,
+        "students": students.count or 0,
         "rating":   avg,
         "sat":      96
     }

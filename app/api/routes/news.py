@@ -298,12 +298,16 @@ async def get_related_articles(post_id: str, limit: int = 5):
         return []
     
     # Find posts with matching tags or category, excluding current post
+    # Combine all OR conditions into a single comma-separated string
+    or_conditions = [f"category.eq.{post.get('category')}"]
+    if post.get('tags'):
+        or_conditions.extend([f"tags.cs.{{{tag}}}" for tag in post['tags']])
+    
+    or_string = ",".join(or_conditions)
+
     related = sb.table("news_posts").select(
         "id, title, image_url, created_at, views_count"
-    ).neq("id", post_id).or_(
-        f"category.eq.{post['category']}",
-        *[f"tags.cs.{{{tag}}}" for tag in post['tags']]
-    ).order("views_count", desc=True).limit(limit).execute().data or []
+    ).neq("id", post_id).or_(or_string).order("views_count", desc=True).limit(limit).execute().data or []
     
     return related
 

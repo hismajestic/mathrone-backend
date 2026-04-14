@@ -23,6 +23,7 @@ class TokenCreate(BaseModel):
     amount_paid: Optional[float] = None
     hours: int = 24
     institution_id: Optional[str] = None  # None = individual guest
+    session_id: Optional[str] = None      # Tutor's active lab session ID for real-time sync
 
 class ValidatePayload(BaseModel):
     device_fingerprint: str
@@ -86,6 +87,7 @@ async def create_token(payload: TokenCreate, current_user: dict = Depends(get_cu
         "amount_paid":     payload.amount_paid,
         "expires_at":      expires_at,
         "institution_id":  payload.institution_id,
+        "session_id":      payload.session_id,
         "created_by":      current_user["id"],
     }
     result = sb.table("lab_tokens").insert(data).execute().data
@@ -159,6 +161,7 @@ async def validate_token(token: str, payload: ValidatePayload):
         "buyer_name": record["buyer_name"],
         "institution_id": inst["id"] if inst else None,
         "institution_name": inst["name"] if inst else None,
+        "session_id": record.get("session_id"),
     }
 
 
