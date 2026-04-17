@@ -32,7 +32,7 @@ async def _groq(messages: list) -> str:
                 "Authorization": f"Bearer {settings.groq_api_key}",
                 "Content-Type": "application/json",
             },
-            json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 512}
+            json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 1024}
         )
         if r.status_code == 429:
             raise Exception("AI service is busy. Please wait a moment and try again.")
@@ -308,7 +308,14 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
 
         if qtype in ("multiple_choice", "multiple_select"):
             correct_ans = q.get("correct_answer", "")
-            if correct_ans:
+            if not correct_ans:
+                ai_feedback[qid] = {
+                    "marks_awarded": None,
+                    "feedback": "No correct answer set — requires manual grading.",
+                    "confidence": "none",
+                    "auto": False
+                }
+            elif correct_ans:
                 if "," in correct_ans:
                     correct_set = set(a.strip().lower() for a in correct_ans.split(","))
                     user_set = set(a.strip().lower() for a in user_answer.split(",")) if user_answer else set()
@@ -371,9 +378,10 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
                 }
 
     # Score based on auto-graded questions only
+    # Only count questions that were actually graded (marks_awarded is not None)
     auto_graded_total = sum(
         q.get("marks", 1) for q in questions
-        if q.get("type") != "text" or q.get("model_answer")
+        if ai_feedback.get(q["id"], {}).get("marks_awarded") is not None
     )
     auto_earned = sum(
         v["marks_awarded"] for v in ai_feedback.values()
@@ -482,7 +490,7 @@ async def ai_regrade_attempt(attempt_id: str, admin: dict = Depends(require_admi
                     "ai_confidence": result["confidence"],
                 }).eq("attempt_id", attempt_id).eq("question_id", qid).execute()
         elif qtype in ("multiple_choice", "multiple_select", "matching"):
-            existing = ai_feedback.get(qid, {})
+            existing = ai_feedback.get(str(qid), ai_feedback.get(qid, {}))
             if existing.get("marks_awarded") is not None:
                 total_auto += q_marks
                 total_earned += existing["marks_awarded"]
