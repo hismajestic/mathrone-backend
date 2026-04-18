@@ -599,7 +599,225 @@ END;
 $$;
 
 -- ============================================================
--- MAJESTIC HUB: Add session_id to lab_tokens
--- Run this in Supabase SQL Editor if lab_tokens table already exists
+-- MAJESTIC LAB: Institutions, Tokens, Active Sessions, Whiteboard
 -- ============================================================
-ALTER TABLE public.lab_tokens ADD COLUMN IF NOT EXISTS session_id TEXT;
+
+CREATE TABLE IF NOT EXISTS public.lab_institutions (
+    id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name        TEXT        NOT NULL,
+    type        TEXT        NOT NULL DEFAULT 'Secondary School',
+    contact     TEXT,
+    licenses    INTEGER     NOT NULL DEFAULT 1,
+    amount_paid DECIMAL(12,2),
+    expires_at  TIMESTAMPTZ,
+    created_by  UUID        REFERENCES public.profiles(id),
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.lab_tokens (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    token               UUID        NOT NULL UNIQUE DEFAULT uuid_generate_v4(),
+    buyer_name          TEXT        NOT NULL,
+    amount_paid         DECIMAL(12,2),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    institution_id      UUID        REFERENCES public.lab_institutions(id) ON DELETE SET NULL,
+    session_id          TEXT,
+    device_fingerprint  TEXT,
+    is_revoked          BOOLEAN     DEFAULT FALSE,
+    created_by          UUID        REFERENCES public.profiles(id),
+    created_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.lab_active_sessions (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    token               UUID        NOT NULL,
+    institution_id      UUID        NOT NULL REFERENCES public.lab_institutions(id) ON DELETE CASCADE,
+    device_fingerprint  TEXT        NOT NULL,
+    last_ping           TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (token, device_fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS public.lab_whiteboard_pages (
+    id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id  TEXT        NOT NULL,
+    page_index  INTEGER     NOT NULL DEFAULT 0,
+    json_data   JSONB       NOT NULL DEFAULT '{}',
+    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (session_id, page_index)
+);
+
+-- Indexes for lab tables
+CREATE INDEX IF NOT EXISTS idx_lab_tokens_token          ON public.lab_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_lab_tokens_institution    ON public.lab_tokens(institution_id);
+CREATE INDEX IF NOT EXISTS idx_lab_active_institution    ON public.lab_active_sessions(institution_id);
+CREATE INDEX IF NOT EXISTS idx_lab_whiteboard_session    ON public.lab_whiteboard_pages(session_id);
+
+-- Cleanup function: remove pings older than 10 minutes (stale sessions)
+CREATE OR REPLACE FUNCTION cleanup_stale_lab_sessions()
+RETURNS void AS $$
+BEGIN
+    DELETE FROM public.lab_active_sessions
+    WHERE last_ping < NOW() - INTERVAL '10 minutes';
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================
+-- TUTORS: Missing columns added by features
+-- ============================================================
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS exam_code            TEXT;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS exam_time_minutes    INTEGER DEFAULT 60;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS written_exam_score   INTEGER;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS interview_score      INTEGER;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS rejection_reason     TEXT;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS salary_amount        DECIMAL(10,2);
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS salary_frequency     TEXT DEFAULT 'monthly';
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS payment_method       TEXT;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS payment_details      TEXT;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS category             TEXT DEFAULT 'academic';
+
+-- ============================================================
+-- EXAM: Questions and Attempts
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.exam_questions (
+    id             UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    question       TEXT        NOT NULL,
+    type           TEXT        NOT NULL DEFAULT 'multiple_choice',
+    options        TEXT[],
+    correct_answer TEXT,
+    model_answer   TEXT,
+    pairs          JSONB,
+    marks          INTEGER     NOT NULL DEFAULT 1,
+    order_num      INTEGER     DEFAULT 0,
+    is_active      BOOLEAN     DEFAULT TRUE,
+    created_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.exam_attempts (
+    id                  UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tutor_id            UUID        NOT NULL REFERENCES public.tutors(id) ON DELETE CASCADE,
+    profile_id          UUID        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status              TEXT        NOT NULL DEFAULT 'in_progress',
+    answers             JSONB       DEFAULT '{}',
+    ai_feedback         JSONB       DEFAULT '{}',
+    score               INTEGER,
+    total_marks         INTEGER,
+    earned_marks        INTEGER,
+    time_limit_minutes  INTEGER     NOT NULL DEFAULT 60,
+    started_at          TIMESTAMPTZ DEFAULT NOW(),
+    submitted_at        TIMESTAMPTZ,
+    auto_submitted      BOOLEAN     DEFAULT FALSE,
+    tab_switches        INTEGER     DEFAULT 0,
+    fullscreen_exits    INTEGER     DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS public.exam_answers (
+    id                UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    attempt_id        UUID        NOT NULL REFERENCES public.exam_attempts(id) ON DELETE CASCADE,
+    question_id       UUID        NOT NULL REFERENCES public.exam_questions(id) ON DELETE CASCADE,
+    answer            TEXT,
+    is_correct        BOOLEAN,
+    marks_awarded     INTEGER,
+    ai_feedback       TEXT,
+    ai_confidence     TEXT,
+    key_points_hit    TEXT[]      DEFAULT '{}',
+    key_points_missed TEXT[]      DEFAULT '{}',
+    UNIQUE (attempt_id, question_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exam_attempts_tutor    ON public.exam_attempts(tutor_id);
+CREATE INDEX IF NOT EXISTS idx_exam_attempts_profile  ON public.exam_attempts(profile_id);
+CREATE INDEX IF NOT EXISTS idx_exam_answers_attempt   ON public.exam_answers(attempt_id);
+
+-- ============================================================
+-- FORUM
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.forum_posts (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    profile_id UUID        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    category   TEXT        NOT NULL DEFAULT 'general',
+    title      TEXT        NOT NULL,
+    content    TEXT        NOT NULL,
+    likes      INTEGER     DEFAULT 0,
+    is_pinned  BOOLEAN     DEFAULT FALSE,
+    is_approved BOOLEAN    DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.forum_comments (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    post_id    UUID        NOT NULL REFERENCES public.forum_posts(id) ON DELETE CASCADE,
+    profile_id UUID        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    content    TEXT        NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.forum_likes (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    post_id    UUID        NOT NULL REFERENCES public.forum_posts(id) ON DELETE CASCADE,
+    profile_id UUID        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    UNIQUE (post_id, profile_id)
+);
+
+-- ============================================================
+-- PROGRESS / FEEDBACK
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.progress_records (
+    id           UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id   UUID        REFERENCES public.sessions(id) ON DELETE SET NULL,
+    student_id   UUID        NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
+    tutor_id     UUID        NOT NULL REFERENCES public.tutors(id)   ON DELETE CASCADE,
+    subject      TEXT        NOT NULL,
+    marks        INTEGER     CHECK (marks BETWEEN 0 AND 100),
+    feedback     TEXT,
+    strengths    TEXT,
+    improvements TEXT,
+    recorded_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- PARENT REPORT TOKENS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.report_tokens (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    token      TEXT        NOT NULL UNIQUE DEFAULT encode(gen_random_bytes(24), 'hex'),
+    student_id UUID        NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
+    created_by UUID        REFERENCES public.profiles(id),
+    expires_at TIMESTAMPTZ DEFAULT NOW() + INTERVAL '30 days',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- CONTACT MESSAGES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.contact_messages (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    full_name  TEXT        NOT NULL,
+    email      TEXT        NOT NULL,
+    subject    TEXT        NOT NULL,
+    message    TEXT        NOT NULL,
+    is_read    BOOLEAN     DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================================
+-- PLATFORM SETTINGS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.platform_settings (
+    id              SERIAL  PRIMARY KEY,
+    is_recruiting   BOOLEAN DEFAULT TRUE,
+    quiz_enabled    BOOLEAN DEFAULT TRUE,
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+INSERT INTO public.platform_settings (id, is_recruiting, quiz_enabled)
+VALUES (1, TRUE, TRUE)
+ON CONFLICT (id) DO NOTHING;
+
+-- TUTOR DOCUMENTS
+CREATE TABLE IF NOT EXISTS public.tutor_documents (
+    id          UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tutor_id    UUID        NOT NULL REFERENCES public.tutors(id) ON DELETE CASCADE,
+    file_type   TEXT        NOT NULL,
+    file_name   TEXT        NOT NULL,
+    file_url    TEXT        NOT NULL,
+    uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);

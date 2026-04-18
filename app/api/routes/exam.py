@@ -309,13 +309,15 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
         if qtype in ("multiple_choice", "multiple_select"):
             correct_ans = q.get("correct_answer", "")
             if not correct_ans:
+                # No correct answer configured — auto-award 0 so score isn't blocked
+                earned_marks += 0
                 ai_feedback[qid] = {
-                    "marks_awarded": None,
-                    "feedback": "No correct answer set — requires manual grading.",
+                    "marks_awarded": 0,
+                    "feedback": "No correct answer set — awarded 0 (admin can override).",
                     "confidence": "none",
-                    "auto": False
+                    "auto": True
                 }
-            elif correct_ans:
+            else:
                 if "," in correct_ans:
                     correct_set = set(a.strip().lower() for a in correct_ans.split(","))
                     user_set = set(a.strip().lower() for a in user_answer.split(",")) if user_answer else set()
@@ -378,7 +380,7 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
                 }
 
     # Score based on auto-graded questions only
-    # Only count questions that were actually graded (marks_awarded is not None)
+    # Count all questions that were graded (marks_awarded is not None)
     auto_graded_total = sum(
         q.get("marks", 1) for q in questions
         if ai_feedback.get(q["id"], {}).get("marks_awarded") is not None
@@ -387,6 +389,10 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
         v["marks_awarded"] for v in ai_feedback.values()
         if v.get("marks_awarded") is not None
     )
+    # Fallback: if nothing was graded at all (e.g. all AI calls failed), use earned_marks
+    if auto_graded_total == 0 and total_marks > 0:
+        auto_graded_total = total_marks
+        auto_earned = earned_marks
     score_pct = round(auto_earned / auto_graded_total * 100) if auto_graded_total > 0 else 0
 
     has_pending = any(v.get("marks_awarded") is None for v in ai_feedback.values())
