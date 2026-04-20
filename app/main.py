@@ -18,6 +18,7 @@ from app.api.routes.progress import router as progress_router
 from app.api.routes.forum import router as forum_router
 from app.api.routes.lab import router as lab_router
 from app.api.routes.quiz import router as quiz_router
+from app.api.routes.courses import router as courses_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -82,6 +83,7 @@ app.include_router(exam_router, prefix="/api/v1")
 app.include_router(shop_router, prefix="/api/v1")
 app.include_router(lab_router, prefix="/api/v1")
 app.include_router(quiz_router, prefix="/api/v1")
+app.include_router(courses_router, prefix=V1)
 
 
 @app.get("/", tags=["Health"])

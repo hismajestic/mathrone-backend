@@ -821,3 +821,70 @@ CREATE TABLE IF NOT EXISTS public.tutor_documents (
     file_url    TEXT        NOT NULL,
     uploaded_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ============================================================
+-- PAID COURSES
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public.courses (
+    id           UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title        TEXT        NOT NULL,
+    slug         TEXT        NOT NULL UNIQUE,
+    description  TEXT,
+    price        DECIMAL(10,2) NOT NULL DEFAULT 0,
+    image_url    TEXT,
+    level        TEXT,
+    subject      TEXT,
+    is_published BOOLEAN     DEFAULT FALSE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.course_lessons (
+    id              UUID    PRIMARY KEY DEFAULT uuid_generate_v4(),
+    course_id       UUID    NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+    title           TEXT    NOT NULL,
+    video_url       TEXT    NOT NULL,
+    duration_mins   INTEGER DEFAULT 0,
+    order_num       INTEGER DEFAULT 0,
+    is_free_preview BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.course_orders (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    course_id  UUID        NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
+    full_name  TEXT        NOT NULL,
+    phone      TEXT        NOT NULL,
+    whatsapp   TEXT,
+    status     TEXT        NOT NULL DEFAULT 'pending',  -- pending | approved | rejected
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.course_enrollments (
+    id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+    student_id UUID        NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    course_id  UUID        NOT NULL REFERENCES public.courses(id)  ON DELETE CASCADE,
+    enrolled_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (student_id, course_id)
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_courses_slug        ON public.courses(slug);
+CREATE INDEX IF NOT EXISTS idx_courses_published   ON public.courses(is_published);
+CREATE INDEX IF NOT EXISTS idx_course_lessons_course ON public.course_lessons(course_id, order_num);
+CREATE INDEX IF NOT EXISTS idx_course_orders_status  ON public.course_orders(status);
+CREATE INDEX IF NOT EXISTS idx_course_enrollments_student ON public.course_enrollments(student_id);
+
+-- RLS
+ALTER TABLE public.courses           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.course_lessons    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.course_orders     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.course_enrollments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "courses_public_read"   ON public.courses        FOR SELECT USING (is_published = TRUE OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'));
+CREATE POLICY "lessons_public_read"   ON public.course_lessons FOR SELECT USING (TRUE);
+CREATE POLICY "enrollments_own"       ON public.course_enrollments FOR SELECT USING (student_id = auth.uid() OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'));
+CREATE POLICY "orders_admin_read"     ON public.course_orders  FOR SELECT USING (EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'));
+
+-- updated_at trigger for courses
+CREATE TRIGGER trg_courses_updated_at BEFORE UPDATE ON public.courses FOR EACH ROW EXECUTE FUNCTION update_updated_at();
