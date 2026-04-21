@@ -56,6 +56,7 @@ def _ensure_profile(sb, user_id: str, full_name: str, email: str, role: str) -> 
 
 def _create_user_via_supabase(email: str, password: str, full_name: str, role: str):
     """Try creating a Supabase user (admin API), with a fallback to public signup."""
+    import httpx
     sb_admin = get_supabase_admin()
     sb_anon  = get_supabase()
 
@@ -67,16 +68,25 @@ def _create_user_via_supabase(email: str, password: str, full_name: str, role: s
             "user_metadata": {"full_name": full_name, "role": role},
         })
     except AuthApiError as e:
-        # Some Supabase projects are configured such that admin user creation fails.
-        # Try the public signup endpoint as a fallback.
+        err_msg = e.message.lower()
+        # Email already registered — surface a clean message immediately
+        if "already" in err_msg or "exists" in err_msg or "registered" in err_msg:
+            raise HTTPException(400, "An account with this email already exists. Please log in instead.")
+        # Try the public signup endpoint as a fallback
         try:
-            return sb_anon.auth.sign_up({
+            result = sb_anon.auth.sign_up({
                 "email": email,
                 "password": password,
                 "options": {"data": {"full_name": full_name, "role": role}},
             })
-        except Exception as e2:
-            raise HTTPException(400, f"Registration failed: {e.message} / {str(e2)}")
+            # sign_up returns a user even for existing emails (Supabase behaviour) — check it's real
+            if not result.user or not result.user.id:
+                raise HTTPException(400, "Registration failed: could not create account. Please try again.")
+            return result
+        except HTTPException:
+            raise
+        except (httpx.ConnectTimeout, httpx.ConnectError, Exception) as e2:
+            raise HTTPException(400, f"Registration failed: {e.message}. Please check your connection and try again.")
         
 async def send_recruitment_email(email: str, name: str, status: str, score: int = None, reason: str = None):
     from app.services.email_service import EmailService
@@ -103,7 +113,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Application Received, {name}! 📋",
                 f"Thank you for applying to become a tutor at Mathrone Academy.<br><br>We have received your application and our team will review your CV and certificates shortly. You will hear from us within 3-5 business days.<br><br>In the meantime, make sure your profile is complete and your documents are up to date.",
-                "https://mathrone-academy.netlify.app/#login",
+                "https://mathroneacademy.com/#login",
                 "View My Application →"
             )
         ),
@@ -112,7 +122,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Good news, {name}! Your application is being reviewed 🔍",
                 f"Our admin team is currently reviewing your application, CV, and certificates.<br><br>We will contact you soon with the next steps. Thank you for your patience.",
-                "https://mathrone-academy.netlify.app/#login",
+                "https://mathroneacademy.com/#login",
                 "View My Profile →"
             )
         ),
@@ -121,7 +131,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Congratulations {name}! You passed the review stage 🎉",
                 f"You have been invited to complete a written examination as part of our tutor vetting process.<br><br>Please log in to your Mathrone Academy account to access your exam. The exam is timed — <strong>60 minutes</strong> — and must be completed in one sitting.<br><br><strong>Important rules:</strong><br>• Do not switch tabs during the exam<br>• Stay in fullscreen mode<br>• Do not copy or paste answers<br>• Submit before the timer runs out",
-                "https://mathrone-academy.netlify.app/#login",
+                "https://mathroneacademy.com/#login",
                 "Take My Exam Now →"
             )
         ),
@@ -130,7 +140,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"{'Well done' if score_grade in ('excellent','good') else 'Thank you'}, {name}! You are invited for an interview 🌟",
                 f"{score_msg + '<br><br>' if score_msg else ''}You have been selected for an interview with our team. We will contact you shortly to schedule a convenient time.<br><br>{'Your strong performance shows great potential as a Mathrone tutor.' if score_grade == 'excellent' else 'Please prepare to discuss your teaching experience and methodology.' if score_grade in ('good','satisfactory') else 'Please prepare to discuss how you plan to improve your subject knowledge.'}<br><br>Make sure your profile bio and documents are complete before the interview.",
-                "https://mathrone-academy.netlify.app/#login",
+                "https://mathroneacademy.com/#login",
                 "Prepare for Interview →"
             )
         ),
@@ -139,7 +149,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Welcome aboard, {name}! 🎓",
                 f"We are thrilled to inform you that you have successfully passed all stages of our vetting process and are now an <strong>approved tutor</strong> on Mathrone Academy.<br><br>{score_msg + '<br><br>' if score_msg else ''}You will be assigned to students shortly. Please make sure your profile, bio, and payment preferences are complete before your first session.<br><br>Welcome to the Mathrone family — let's change education in Rwanda together! 👑",
-                "https://mathrone-academy.netlify.app/#login",
+                "https://mathroneacademy.com/#login",
                 "Go to My Dashboard →"
             )
         ),
@@ -148,7 +158,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Thank you for applying, {name}",
                 f"After careful review of your application{'and exam results' if score else ''}, we regret to inform you that we are unable to move forward at this time.<br><br>{score_msg + '<br><br>' if score_msg else ''}{'<strong>Reason:</strong> ' + reason + '<br><br>' if reason else ''}We encourage you to continue developing your skills and reapply in the future. We appreciate the time and effort you put into your application.",
-                "https://mathrone-academy.netlify.app",
+                "https://mathroneacademy.com",
                 "Visit Mathrone Academy →"
             )
         ),
@@ -157,7 +167,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Account Suspended, {name}",
                 f"Your tutor account on Mathrone Academy has been temporarily suspended.<br><br>{'<strong>Reason:</strong> ' + reason + '<br><br>' if reason else ''}Please contact our admin team for more information.",
-                "https://mathrone-academy.netlify.app",
+                "https://mathroneacademy.com",
                 "Contact Support →"
             )
         ),
@@ -188,21 +198,24 @@ async def register_student(payload: RegisterStudentRequest):
     sb.table("profiles").update({"role": "student"}).eq("id", user_id).execute()
 
     # Create student record
-    sb.table("students").insert({
-        "profile_id":      user_id,
-        "school_level":    payload.school_level,
-        "subjects_needed": payload.subjects_needed,
-        "preferred_mode":  payload.preferred_mode.value,
-        "home_location":   payload.home_location,
-        "parent_name":     payload.parent_name,
-        "parent_phone":    payload.parent_phone,
-        "category":        payload.category or 'academic',
-    }).execute()
+    try:
+        sb.table("students").insert({
+            "profile_id":      user_id,
+            "school_level":    payload.school_level,
+            "subjects_needed": payload.subjects_needed,
+            "preferred_mode":  payload.preferred_mode.value,
+            "home_location":   payload.home_location,
+            "parent_name":     payload.parent_name,
+            "parent_phone":    payload.parent_phone,
+            "category":        payload.category or 'academic',
+        }).execute()
+    except Exception as e:
+        raise HTTPException(400, f"Failed to create student record: {str(e)}")
 
 # Send verification email
     token = secrets.token_urlsafe(32)
     sb.table("profiles").update({"verify_token": token}).eq("id", user_id).execute()
-    verify_url = f"https://mathrone-academy.netlify.app/#verify/{token}"
+    verify_url = f"https://mathroneacademy.com/verify/{token}"
     await EmailService.send(
         payload.email,
         "Verify your Mathrone Academy account ✅",
@@ -227,8 +240,6 @@ async def register_student(payload: RegisterStudentRequest):
     access_token  = create_access_token({"sub": user_id, "role": "student"})
     refresh_token = create_refresh_token({"sub": user_id})
     return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=profile)
-    if not result.data.get("is_verified"):
-        raise HTTPException(403, "Please verify your email first. Check your inbox for the verification link.")
 
 
 @router.post("/register/tutor", response_model=TokenResponse, status_code=201)
@@ -252,24 +263,27 @@ async def register_tutor(payload: RegisterTutorRequest):
     }).eq("id", user_id).execute()
 
     # Create tutor record
-    sb.table("tutors").insert({
-        "profile_id":        user_id,
-        "status":            "applicant",
-        "subjects":          payload.subjects,
-        "levels":            payload.levels,
-        "teaching_modes":    payload.teaching_modes,
-        "experience_years":  payload.experience_years,
-        "experience_desc":   payload.experience_desc,
-        "qualification":     payload.qualification,
-        "education_details": payload.education_details,
-        "languages":         payload.languages,
-        "bio":               payload.bio,
-        "location":          payload.location,
-    }).execute()
+    try:
+        sb.table("tutors").insert({
+            "profile_id":        user_id,
+            "status":            "applicant",
+            "subjects":          payload.subjects,
+            "levels":            payload.levels,
+            "teaching_modes":    payload.teaching_modes,
+            "experience_years":  payload.experience_years,
+            "experience_desc":   payload.experience_desc,
+            "qualification":     payload.qualification,
+            "education_details": payload.education_details,
+            "languages":         payload.languages,
+            "bio":               payload.bio,
+            "location":          payload.location,
+        }).execute()
+    except Exception as e:
+        raise HTTPException(400, f"Failed to create tutor record: {str(e)}")
 # Send verification email
     token = secrets.token_urlsafe(32)
     sb.table("profiles").update({"verify_token": token}).eq("id", user_id).execute()
-    verify_url = f"https://mathrone-academy.netlify.app/#verify/{token}"
+    verify_url = f"https://mathroneacademy.com/verify/{token}"
     await EmailService.send(
         payload.email,
         "Verify your Mathrone Academy account ✅",
@@ -451,7 +465,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
         "reset_token":         token,
         "reset_token_expires": expires
     }).eq("id", profile["id"]).execute()
-    reset_url = f"https://mathrone-academy.netlify.app/#reset/{token}"
+    reset_url = f"https://mathroneacademy.com/reset/{token}"
     try:
         await EmailService.send(
             payload.email,
@@ -464,14 +478,8 @@ async def forgot_password(payload: ForgotPasswordRequest):
             )
         )
     except Exception as e:
-        print(f"❌ Email error: {e}")
-        "Reset your Mathrone Academy password 🔑",
-        EmailService.template(
-            "Password Reset Request 🔑",
-            f"Hi {profile['full_name']},<br><br>We received a request to reset your password. Click the button below to set a new password. This link expires in 2 hours.<br><br>If you did not request this, ignore this email.",
-            reset_url,
-            "Reset My Password →"
-        )
+        print(f"❌ Email send failed: {e}")
+        raise HTTPException(500, "Failed to send reset email. Please try again later.")
     
     return MessageResponse(message="If that email exists, a reset link has been sent.")
 
@@ -584,9 +592,12 @@ async def reply_contact_message(
 
 @router.get("/settings/recruiting")
 async def get_recruiting_status():
-    sb = get_supabase_admin()
-    result = sb.table("platform_settings").select("value").eq("key", "is_recruiting").single().execute().data
-    return { "is_recruiting": result["value"] == "true" if result else True }
+    try:
+        sb = get_supabase_admin()
+        result = sb.table("platform_settings").select("value").eq("key", "is_recruiting").single().execute().data
+        return { "is_recruiting": result["value"] == "true" if result else True }
+    except Exception:
+        return { "is_recruiting": True }
 
 @router.patch("/settings/recruiting")
 async def set_recruiting_status(
