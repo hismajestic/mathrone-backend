@@ -243,7 +243,7 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
                     EmailService.template(
                         title=f"New {category_display} Article",
                         body=body,
-                        action_url=f"https://mathroneacademy.pages.dev/news/{new_post.get('slug') or new_post['id']}",
+                        action_url=f"https://mathroneacademy.com/news/{new_post.get('slug') or new_post['id']}",
                         action_label="Read Article"
                     )
                 ))
@@ -354,7 +354,7 @@ async def news_preview(post_id: str):
         description = post["content"].replace("<", " ").replace(">", " ")
         description = " ".join(description.split())[:150] + "..."
         image = post["image_url"] or "https://images.unsplash.com/photo-1523240795612-9a054b0db644?w=1200&q=80"
-        redirect_url = f"https://mathroneacademy.pages.dev/news/{post_id}"
+        redirect_url = f"https://mathroneacademy.com/news/{post_id}"
         return HTMLResponse(f"""<!DOCTYPE html>
 <html>
 <head>
@@ -375,4 +375,4 @@ async def news_preview(post_id: str):
 <body>Redirecting to article...</body>
 </html>""")
     except Exception:
-        return HTMLResponse('<meta http-equiv="refresh" content="0;url=https://mathroneacademy.pages.dev"/>')
+        return HTMLResponse('<meta http-equiv="refresh" content="0;url=https://mathroneacademy.com"/>')
