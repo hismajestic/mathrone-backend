@@ -4,6 +4,8 @@ from app.db.supabase import get_supabase_admin
 from pydantic import BaseModel
 from typing import Optional, List
 import uuid
+import asyncio
+import re
 
 router = APIRouter(prefix="/shop", tags=["shop"])
 
@@ -36,8 +38,6 @@ async def get_products(
 @router.get("/products/{product_id}")
 async def get_product(product_id: str):
     sb = get_supabase_admin()
-    # Try UUID lookup first, then fall back to slug
-    import re
     uuid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
     if uuid_pattern.match(product_id):
         product = sb.table("products").select("*").eq("id", product_id).execute().data
@@ -50,8 +50,7 @@ async def get_product(product_id: str):
 @router.get("/bundles")
 async def get_bundles():
     sb = get_supabase_admin()
-    bundles = sb.table("bundles").select("*, bundle_items(*, products(*))").eq("is_active", True).execute().data or []
-    return bundles
+    return sb.table("bundles").select("*, bundle_items(*, products(*))").eq("is_active", True).execute().data or []
 
 @router.get("/featured")
 async def get_featured():
@@ -65,8 +64,7 @@ async def get_featured():
 @router.get("/cart")
 async def get_cart(current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
-    items = sb.table("cart_items").select("*, products(*), bundles(*)").eq("user_id", current_user["id"]).execute().data or []
-    return items
+    return sb.table("cart_items").select("*, products(*), bundles(*)").eq("user_id", current_user["id"]).execute().data or []
 
 class CartAdd(BaseModel):
     product_id: Optional[str] = None
@@ -176,9 +174,7 @@ async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_curr
         })
     if order_items:
         sb.table("order_items").insert(order_items).execute()
-    # Clear cart
     sb.table("cart_items").delete().eq("user_id", current_user["id"]).execute()
-    # Notify admin
     try:
         from app.services.notification_service import NotificationService
         admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
@@ -196,8 +192,7 @@ async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_curr
 @router.get("/orders/my")
 async def my_orders(current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
-    orders = sb.table("orders").select("*, order_items(*)").eq("user_id", current_user["id"]).order("created_at", desc=True).execute().data or []
-    return orders
+    return sb.table("orders").select("*, order_items(*)").eq("user_id", current_user["id"]).order("created_at", desc=True).execute().data or []
 
 # ─── ADMIN ────────────────────────────────────────────
 
@@ -210,7 +205,6 @@ async def admin_orders(admin: dict = Depends(require_admin)):
 async def update_order_status(order_id: str, payload: dict, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
     sb.table("orders").update({"status": payload.get("status"), "updated_at": "now()"}).eq("id", order_id).execute()
-    # Notify buyer
     try:
         from app.services.notification_service import NotificationService
         order = sb.table("orders").select("user_id").eq("id", order_id).single().execute().data
@@ -231,6 +225,8 @@ async def update_order_status(order_id: str, payload: dict, admin: dict = Depend
     except Exception:
         pass
     return {"message": "Order status updated"}
+
+# ─── PRODUCTS ADMIN ───────────────────────────────────
 
 class ProductCreate(BaseModel):
     name:               str
@@ -253,7 +249,6 @@ class ProductCreate(BaseModel):
 @router.post("/products/admin")
 async def create_product(payload: ProductCreate, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
-    import re
     slug = payload.slug or re.sub(r'\s+', '-', re.sub(r'[^a-z0-9\s-]', '', payload.name.lower().strip()))
     result = sb.table("products").insert({
         "name":             payload.name,
@@ -278,7 +273,6 @@ async def create_product(payload: ProductCreate, admin: dict = Depends(require_a
 @router.patch("/products/admin/{product_id}")
 async def update_product(product_id: str, payload: ProductCreate, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
-    import re
     slug = payload.slug or re.sub(r'\s+', '-', re.sub(r'[^a-z0-9\s-]', '', payload.name.lower().strip()))
     sb.table("products").update({
         "name":             payload.name,
@@ -300,11 +294,7 @@ async def update_product(product_id: str, payload: ProductCreate, admin: dict = 
     }).eq("id", product_id).execute()
     return {"message": "Product updated"}
 
-@router.delete("/products/admin/{product_id}")
-async def delete_product(product_id: str, admin: dict = Depends(require_admin)):
-    sb = get_supabase_admin()
-    sb.table("products").delete().eq("id", product_id).execute()
-    return {"message": "Product deleted"}
+# ─── IMAGE / VIDEO ROUTES (static before dynamic!) ────
 
 @router.post("/products/admin/upload-image")
 async def upload_product_image(
@@ -317,32 +307,18 @@ async def upload_product_image(
     if ext not in ['jpg', 'jpeg', 'png', 'webp']:
         raise HTTPException(400, "Only JPG, PNG or WebP allowed")
     path = f"products/{uuid.uuid4()}.{ext}"
-    sb.storage.from_("product-images").upload(
-        path, contents,
-        file_options={"content-type": file.content_type, "upsert": "true"}
+    content_type = file.content_type
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: sb.storage.from_("product-images").upload(
+            path, contents,
+            file_options={"content-type": content_type, "upsert": "true"}
+        )
     )
     url = sb.storage.from_("product-images").get_public_url(path)
     return {"url": url}
-@router.delete("/products/admin/delete-image")
-async def delete_product_image(payload: dict, admin: dict = Depends(require_admin)):
-    sb = get_supabase_admin()
-    url = payload.get("url", "")
-    if not url:
-        raise HTTPException(400, "URL required")
-    # Extract storage path from full URL
-    path = url.split("/product-images/")[-1]
-    # Remove from storage
-    try:
-        sb.storage.from_("product-images").remove([path])
-    except Exception as e:
-        raise HTTPException(500, f"Storage delete failed: {str(e)}")
-    return {"message": "Image deleted from storage"}
 
-@router.delete("/products/admin/delete-video")
-async def delete_product_video(product_id: str, admin: dict = Depends(require_admin)):
-    sb = get_supabase_admin()
-    sb.table("products").update({"video_url": None}).eq("id", product_id).execute()
-    return {"message": "Video removed"}
 @router.post("/products/admin/upload-extra-image")
 async def upload_extra_image(
     file: UploadFile = File(...),
@@ -354,12 +330,50 @@ async def upload_extra_image(
     if ext not in ['jpg', 'jpeg', 'png', 'webp']:
         raise HTTPException(400, "Only JPG, PNG or WebP allowed")
     path = f"products/extra/{uuid.uuid4()}.{ext}"
-    sb.storage.from_("product-images").upload(
-        path, contents,
-        file_options={"content-type": file.content_type, "upsert": "true"}
+    content_type = file.content_type
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: sb.storage.from_("product-images").upload(
+            path, contents,
+            file_options={"content-type": content_type, "upsert": "true"}
+        )
     )
     url = sb.storage.from_("product-images").get_public_url(path)
     return {"url": url}
+
+@router.delete("/products/admin/delete-image")
+async def delete_product_image(payload: dict, admin: dict = Depends(require_admin)):
+    sb = get_supabase_admin()
+    url = payload.get("url", "")
+    if not url:
+        raise HTTPException(400, "URL required")
+    path = url.split("/product-images/")[-1]
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: sb.storage.from_("product-images").remove([path])
+        )
+    except Exception as e:
+        raise HTTPException(500, f"Storage delete failed: {str(e)}")
+    return {"message": "Image deleted from storage"}
+
+@router.delete("/products/admin/delete-video")
+async def delete_product_video(product_id: str, admin: dict = Depends(require_admin)):
+    sb = get_supabase_admin()
+    sb.table("products").update({"video_url": None}).eq("id", product_id).execute()
+    return {"message": "Video removed"}
+
+# ─── dynamic product delete LAST so it never swallows static routes ───
+
+@router.delete("/products/admin/{product_id}")
+async def delete_product(product_id: str, admin: dict = Depends(require_admin)):
+    sb = get_supabase_admin()
+    sb.table("products").delete().eq("id", product_id).execute()
+    return {"message": "Product deleted"}
+
+# ─── BUNDLES ADMIN ────────────────────────────────────
 
 class BundleCreate(BaseModel):
     name:        str
@@ -393,7 +407,7 @@ async def delete_bundle(bundle_id: str, admin: dict = Depends(require_admin)):
     sb.table("bundles").delete().eq("id", bundle_id).execute()
     return {"message": "Bundle deleted"}
 
-# ─── GUEST ORDER ──────────────────────────────────────
+# ─── GUEST ORDERS ─────────────────────────────────────
 
 class GuestOrderItem(BaseModel):
     name: str
@@ -424,10 +438,9 @@ async def place_guest_order(payload: GuestOrder):
         "is_wholesale":     payload.is_wholesale,
         "notes":            payload.notes,
     }).execute().data[0]
-    # Notify admin
     try:
         from app.services.notification_service import NotificationService
-        admins = sb.table("profiles").select("id").eq("role","admin").execute().data or []
+        admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
         for admin in admins:
             await NotificationService.create(
                 admin["id"], "general",
