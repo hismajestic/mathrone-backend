@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
 import random
@@ -38,6 +38,7 @@ class LessonCreate(BaseModel):
     duration_mins: int = 0
     order_num: int = 0
     is_free_preview: bool = False
+    image_url: Optional[str] = None      # lesson thumbnail
     content: Optional[str] = None        # rich text explanation
     notes: Optional[str] = None          # downloadable notes / summary
     resources: Optional[list] = []       # [{label, url, type}]
@@ -66,10 +67,11 @@ def get_public_course_details(slug: str):
     if not res.data:
         raise HTTPException(status_code=404, detail="Course not found")
     course = res.data[0]
+    # Fetch ALL lessons to show Table of Contents, but only safe public fields (no video urls)
     lessons = sb.table("course_lessons").select(
-        "id, title, duration_mins, order_num"
-    ).eq("course_id", course["id"]).eq("is_free_preview", True).order("order_num").execute()
-    course["preview_lessons"] = lessons.data
+        "id, title, duration_mins, order_num, image_url"
+    ).eq("course_id", course["id"]).order("order_num").execute()
+    course["lessons"] = lessons.data
     return course
 
 @router.post("/request-enrollment")
@@ -181,6 +183,51 @@ def reject_course_order(order_id: str, admin=Depends(require_admin)):
     sb = get_supabase_admin()
     sb.table("course_orders").update({"status": "rejected"}).eq("id", order_id).execute()
     return {"message": "Order rejected"}
+
+@router.post("/admin/upload-image")
+async def upload_course_image(file: UploadFile = File(...), admin=Depends(require_admin)):
+    sb = get_supabase_admin()
+    import uuid
+    import asyncio
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "jpg"
+    filename = f"courses/{uuid.uuid4()}.{ext}"
+    
+    try:
+        file_bytes = await file.read()
+        
+        def do_upload():
+            try:
+                sb.storage.from_("assets").upload(
+                    path=filename, 
+                    file=file_bytes, 
+                    file_options={"content-type": file.content_type}
+                )
+            except Exception as inner_e:
+                err_str = str(inner_e)
+                if "local variable 'response'" in err_str or "ConnectTimeout" in err_str or "ReadError" in err_str:
+                    raise Exception("Server network timeout. Please try again.")
+                try:
+                    sb.storage.from_("assets").upload(filename, file_bytes)
+                except Exception as fallback_e:
+                    err_str2 = str(fallback_e)
+                    if "local variable 'response'" in err_str2 or "ConnectTimeout" in err_str2 or "ReadError" in err_str2:
+                        raise Exception("Server network timeout on fallback. Please try again.")
+                    raise fallback_e
+
+        await asyncio.to_thread(do_upload)
+        url = sb.storage.from_("assets").get_public_url(filename)
+        return {"url": url}
+        
+    except Exception as e:
+        import traceback
+        print(f"--- UPLOAD ERROR ---\n{traceback.format_exc()}\n--------------------")
+        
+        # Strip confusing python errors for the frontend user
+        clean_msg = str(e)
+        if "local variable 'response'" in clean_msg or "10060" in clean_msg or "10035" in clean_msg:
+            clean_msg = "Network connection to Supabase timed out. Please check your internet and try again."
+            
+        raise HTTPException(status_code=400, detail=clean_msg)
 
 @router.post("/admin")
 def create_course(course: CourseCreate, admin=Depends(require_admin)):
