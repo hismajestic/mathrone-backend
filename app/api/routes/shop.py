@@ -245,6 +245,7 @@ class ProductCreate(BaseModel):
     wholesale_min_qty:  int = 6
     wholesale_price:    Optional[float] = None
     wholesale_label:    Optional[str] = "Box"
+    member_discount_pct: float = 3
 
 @router.post("/products/admin")
 async def create_product(payload: ProductCreate, admin: dict = Depends(require_admin)):
@@ -266,7 +267,8 @@ async def create_product(payload: ProductCreate, admin: dict = Depends(require_a
         "wholesale_enabled": payload.wholesale_enabled,
         "wholesale_min_qty": payload.wholesale_min_qty,
         "wholesale_price":   payload.wholesale_price,
-        "wholesale_label":   payload.wholesale_label,
+        "wholesale_label":    payload.wholesale_label,
+        "member_discount_pct": payload.member_discount_pct,
     }).execute().data
     return result[0] if result else {}
 
@@ -290,7 +292,8 @@ async def update_product(product_id: str, payload: ProductCreate, admin: dict = 
         "wholesale_enabled": payload.wholesale_enabled,
         "wholesale_min_qty": payload.wholesale_min_qty,
         "wholesale_price":   payload.wholesale_price,
-        "wholesale_label":   payload.wholesale_label,
+        "wholesale_label":    payload.wholesale_label,
+        "member_discount_pct": payload.member_discount_pct,
     }).eq("id", product_id).execute()
     return {"message": "Product updated"}
 
