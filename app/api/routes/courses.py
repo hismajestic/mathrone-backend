@@ -18,9 +18,11 @@ class CourseCreate(BaseModel):
     description: Optional[str] = None
     price: float = 0.0
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
     level: Optional[str] = None
     subject: Optional[str] = None
     is_published: bool = False
+    
 
 class CourseUpdate(BaseModel):
     title: Optional[str] = None
@@ -28,9 +30,14 @@ class CourseUpdate(BaseModel):
     description: Optional[str] = None
     price: Optional[float] = None
     image_url: Optional[str] = None
+    video_url: Optional[str] = None
     level: Optional[str] = None
     subject: Optional[str] = None
     is_published: Optional[bool] = None
+    term: Optional[str] = None
+    is_exam_prep: Optional[bool] = None
+    curriculum: Optional[str] = None
+    
 
 class LessonCreate(BaseModel):
     title: str
