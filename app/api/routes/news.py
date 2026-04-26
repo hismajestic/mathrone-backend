@@ -111,6 +111,9 @@ class NewsCreate(BaseModel):
 class NewsletterSubscribe(BaseModel):
     email: str
 
+class ImageDeletePayload(BaseModel):
+    path: str
+
 # ── Get all news posts ─────────────────────────────────────────────────────────
 @router.get("/")
 async def get_news(
@@ -280,6 +283,23 @@ async def update_news(post_id: str, payload: NewsCreate, admin: dict = Depends(r
         "updated_at":   "now()",
     }).eq("id", post_id).execute()
     return result.data[0]
+
+# ── Admin deletes image from storage ──────────────────────────────────────────
+@router.delete("/delete-image")
+async def delete_news_image(
+    payload: ImageDeletePayload,
+    admin: dict = Depends(require_admin)
+):
+    """Delete an image from Supabase Storage"""
+    sb = get_supabase_admin()
+    path = payload.path
+    if not path:
+        raise HTTPException(400, "No path provided")
+    try:
+        sb.storage.from_("news-images").remove([path])
+        return {"message": "Image deleted"}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete image: {str(e)}")
 
 # ── Admin deletes news post ────────────────────────────────────────────────────
 @router.delete("/{post_id}")
