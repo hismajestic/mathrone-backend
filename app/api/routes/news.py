@@ -96,6 +96,7 @@ def generate_tags(content: str, title: str = "", max_tags: int = 5) -> list[str]
 
 router = APIRouter(prefix="/news", tags=["News"])
 
+
 class NewsCreate(BaseModel):
     title:       str
     content:     str
@@ -113,6 +114,119 @@ class NewsletterSubscribe(BaseModel):
 
 class ImageDeletePayload(BaseModel):
     path: str
+# ── Admin: cleanup orphaned payment proof images ───────────────────────────────
+@router.delete("/admin/cleanup-proofs")
+async def cleanup_payment_proofs(admin: dict = Depends(require_admin)):
+    """
+    Scans payment-proofs/ folder in storage and deletes any images
+    that are not referenced in orders or guest_orders tables.
+    Safe to run anytime — only deletes truly orphaned files.
+    """
+    sb = get_supabase_admin()
+
+    # 1. Get all files in payment-proofs/ folder
+    try:
+        storage_files = sb.storage.from_("news-images").list("payment-proofs")
+    except Exception as e:
+        raise HTTPException(500, f"Could not list storage files: {str(e)}")
+
+    if not storage_files:
+        return {"deleted": 0, "message": "No proof files found in storage"}
+
+    # 2. Collect all proof URLs referenced in both orders tables
+    referenced_urls = set()
+    try:
+        member_orders = sb.table("orders").select("payment_proof").not_.is_("payment_proof", "null").execute()
+        for o in (member_orders.data or []):
+            if o.get("payment_proof"):
+                referenced_urls.add(o["payment_proof"])
+    except Exception:
+        pass
+
+    try:
+        guest_orders = sb.table("guest_orders").select("payment_proof").not_.is_("payment_proof", "null").execute()
+        for o in (guest_orders.data or []):
+            if o.get("payment_proof"):
+                referenced_urls.add(o["payment_proof"])
+    except Exception:
+        pass
+
+    try:
+        course_orders = sb.table("course_orders").select("payment_proof").not_.is_("payment_proof", "null").execute()
+        for o in (course_orders.data or []):
+            if o.get("payment_proof"):
+                referenced_urls.add(o["payment_proof"])
+    except Exception:
+        pass
+
+    # 3. Find orphaned files — in storage but not in any order
+    to_delete = []
+    for f in storage_files:
+        fname = f.get("name", "")
+        full_path = f"payment-proofs/{fname}"
+        # Build what the public URL would look like for this file
+        public_url = sb.storage.from_("news-images").get_public_url(full_path)
+        if public_url not in referenced_urls:
+            to_delete.append(full_path)
+
+    if not to_delete:
+        return {"deleted": 0, "message": "No orphaned proof images found — storage is clean ✅"}
+
+    # 4. Delete orphaned files in batches of 20
+    deleted = 0
+    errors = []
+    batch_size = 20
+    for i in range(0, len(to_delete), batch_size):
+        batch = to_delete[i:i + batch_size]
+        try:
+            sb.storage.from_("news-images").remove(batch)
+            deleted += len(batch)
+        except Exception as e:
+            errors.append(str(e))
+
+    return {
+        "deleted": deleted,
+        "errors": errors if errors else None,
+        "message": f"Cleaned up {deleted} orphaned proof image{'s' if deleted != 1 else ''} ✅"
+    }
+# ── Public: upload payment proof (no auth required — guest users) ──────────────
+@router.post("/public/upload-proof")
+async def upload_payment_proof(file: UploadFile = File(...)):
+    """
+    Public endpoint for guest users to upload payment screenshots.
+    Strictly images only, stored in payment-proofs/ folder.
+    No authentication required.
+    """
+    import uuid
+
+    # Strict image-only validation
+    ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+    if file.content_type not in ALLOWED_TYPES:
+        raise HTTPException(400, "Only image files are allowed (JPG, PNG, WEBP)")
+
+    # Max 5MB
+    MAX_SIZE = 5 * 1024 * 1024
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_SIZE:
+        raise HTTPException(400, "File too large. Maximum size is 5MB.")
+
+    ext = (file.filename or "image.jpg").split(".")[-1].lower()
+    if ext not in {"jpg", "jpeg", "png", "webp", "gif"}:
+        ext = "jpg"
+
+    filename = f"payment-proofs/{uuid.uuid4()}.{ext}"
+
+    try:
+        sb = get_supabase_admin()
+        sb.storage.from_("news-images").upload(
+            path=filename,
+            file=file_bytes,
+            file_options={"content-type": file.content_type}
+        )
+        url = sb.storage.from_("news-images").get_public_url(filename)
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {str(e)}")
 
 # ── Get all news posts ─────────────────────────────────────────────────────────
 @router.get("/")

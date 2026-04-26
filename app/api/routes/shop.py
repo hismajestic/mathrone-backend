@@ -148,6 +148,8 @@ class PlaceOrder(BaseModel):
     delivery_address: str
     delivery_phone:   str
     notes:            Optional[str] = None
+    momo_reference:   Optional[str] = None
+    payment_proof:    Optional[str] = None
 
 @router.post("/orders")
 async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_current_user)):
@@ -160,7 +162,9 @@ async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_curr
         "delivery_address": payload.delivery_address,
         "delivery_phone":   payload.delivery_phone,
         "notes":            payload.notes,
-        "status":           "pending"
+        "status":           "pending",
+        "momo_reference":   payload.momo_reference,
+        "payment_proof":    payload.payment_proof
     }).execute().data[0]
     order_items = []
     for item in payload.items:
@@ -427,6 +431,8 @@ class GuestOrder(BaseModel):
     total_amount: float
     is_wholesale: bool = False
     notes: Optional[str] = None
+    momo_reference: Optional[str] = None
+    payment_proof: Optional[str] = None
 
 @router.post("/guest-orders")
 async def place_guest_order(payload: GuestOrder):
@@ -440,6 +446,8 @@ async def place_guest_order(payload: GuestOrder):
         "total_amount":     payload.total_amount,
         "is_wholesale":     payload.is_wholesale,
         "notes":            payload.notes,
+        "momo_reference":   payload.momo_reference,
+        "payment_proof":    payload.payment_proof
     }).execute().data[0]
     try:
         from app.services.notification_service import NotificationService

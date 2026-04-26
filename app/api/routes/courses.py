@@ -58,6 +58,8 @@ class LessonProgressUpdate(BaseModel):
 
 class StudentOrderCreate(BaseModel):
     course_id: str
+    momo_reference: Optional[str] = None
+    payment_proof: Optional[str] = None  # Supabase Storage URL
 
 
 # ── Public endpoints ───────────────────────────────────────────────────────────
@@ -111,9 +113,11 @@ def request_enrollment(order: StudentOrderCreate, user=Depends(get_current_user)
         raise HTTPException(status_code=400, detail="You already have a pending enrollment request for this course")
 
     res = sb.table("course_orders").insert({
-        "course_id": order.course_id,
-        "student_id": user["id"],
-        "status": "pending"
+        "course_id":       order.course_id,
+        "student_id":      user["id"],
+        "status":          "pending",
+        "momo_reference":  order.momo_reference,
+        "payment_proof":   order.payment_proof,
     }).execute()
     return {"message": "Enrollment request submitted. Admin will grant access after payment.", "auto_enrolled": False, "order_id": res.data[0]["id"]}
 
@@ -145,8 +149,31 @@ def get_all_courses(admin=Depends(require_admin)):
 @router.get("/admin/orders")
 def get_all_orders(admin=Depends(require_admin)):
     sb = get_supabase_admin()
-    res = sb.table("course_orders").select("*, courses(title, price)").order("created_at", desc=True).execute()
-    return res.data
+
+    # Fetch orders joined with course info
+    res = sb.table("course_orders").select(
+        "*, courses(title, price), momo_reference, payment_proof"
+    ).order("created_at", desc=True).execute()
+    orders = res.data
+
+    # Collect unique student_ids to look up profiles in one query
+    student_ids = list({o["student_id"] for o in orders if o.get("student_id")})
+
+    if student_ids:
+        profiles_res = sb.table("profiles").select(
+            "id, full_name, email, phone"
+        ).in_("id", student_ids).execute()
+        # Build a lookup dict keyed by profile id
+        profiles_map = {p["id"]: p for p in profiles_res.data}
+    else:
+        profiles_map = {}
+
+    # Attach profile data to each order
+    for order in orders:
+        sid = order.get("student_id")
+        order["profiles"] = profiles_map.get(sid) if sid else None
+
+    return orders
 
 @router.post("/admin/orders/{order_id}/approve")
 def approve_course_order(order_id: str, admin=Depends(require_admin)):
