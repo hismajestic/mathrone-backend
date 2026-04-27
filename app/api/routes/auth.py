@@ -59,10 +59,12 @@ def _create_user_via_supabase(email: str, password: str, full_name: str, role: s
     import httpx
     sb_admin = get_supabase_admin()
     sb_anon  = get_supabase()
+    
+    email_clean = email.strip().lower()
 
     try:
         return sb_admin.auth.admin.create_user({
-            "email":         email,
+            "email":         email_clean,
             "password":      password,
             "email_confirm": True,
             "user_metadata": {"full_name": full_name, "role": role},
@@ -75,7 +77,7 @@ def _create_user_via_supabase(email: str, password: str, full_name: str, role: s
         # Try the public signup endpoint as a fallback
         try:
             result = sb_anon.auth.sign_up({
-                "email": email,
+                "email": email_clean,
                 "password": password,
                 "options": {"data": {"full_name": full_name, "role": role}},
             })
@@ -183,6 +185,11 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
 @router.post("/register/student", response_model=TokenResponse, status_code=201)
 async def register_student(payload: RegisterStudentRequest):
     """Register a new student / parent account."""
+    payload.email = payload.email.strip().lower()
+    if len(payload.full_name) > 100:
+        raise HTTPException(400, "Name is too long")
+    if len(payload.password) < 6 or len(payload.password) > 128:
+        raise HTTPException(400, "Password must be between 6 and 128 characters")
     sb = get_supabase_admin()
 
     auth_resp = _create_user_via_supabase(
@@ -212,20 +219,23 @@ async def register_student(payload: RegisterStudentRequest):
     except Exception as e:
         raise HTTPException(400, f"Failed to create student record: {str(e)}")
 
-# Send verification email
+    # Send verification email
     token = secrets.token_urlsafe(32)
     sb.table("profiles").update({"verify_token": token}).eq("id", user_id).execute()
     verify_url = f"https://mathroneacademy.com/verify/{token}"
-    await EmailService.send(
-        payload.email,
-        "Verify your Mathrone Academy account ✅",
-        EmailService.template(
-            "Welcome to Mathrone Academy! 👑",
-            f"Hi {payload.full_name},<br><br>Thank you for joining Mathrone Academy! Please verify your email address to activate your account.",
-            verify_url,
-            "Verify My Email →"
+    try:
+        await EmailService.send(
+            payload.email,
+            "Verify your Mathrone Academy account ✅",
+            EmailService.template(
+                "Welcome to Mathrone Academy! 👑",
+                f"Hi {payload.full_name},<br><br>Thank you for joining Mathrone Academy! Please verify your email address to activate your account.",
+                verify_url,
+                "Verify My Email →"
+            )
         )
-    )
+    except Exception as email_err:
+        print(f"⚠️ Verification email failed for {payload.email}: {email_err}")
     # Welcome notification
     await NotificationService.create(
         user_id, "general",
@@ -241,10 +251,16 @@ async def register_student(payload: RegisterStudentRequest):
     refresh_token = create_refresh_token({"sub": user_id})
     return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=profile)
 
-
 @router.post("/register/tutor", response_model=TokenResponse, status_code=201)
 async def register_tutor(payload: RegisterTutorRequest):
     """Register a tutor application (status starts as 'applicant')."""
+    payload.email = payload.email.strip().lower()
+    if len(payload.full_name) > 100:
+        raise HTTPException(400, "Name is too long")
+    if len(payload.password) < 6 or len(payload.password) > 128:
+        raise HTTPException(400, "Password must be between 6 and 128 characters")
+    if len(payload.subjects) > 20:
+        raise HTTPException(400, "Too many subjects listed")
     sb = get_supabase_admin()
 
     auth_resp = _create_user_via_supabase(
@@ -280,27 +296,31 @@ async def register_tutor(payload: RegisterTutorRequest):
         }).execute()
     except Exception as e:
         raise HTTPException(400, f"Failed to create tutor record: {str(e)}")
-# Send verification email
+
+    # Send verification email
     token = secrets.token_urlsafe(32)
     sb.table("profiles").update({"verify_token": token}).eq("id", user_id).execute()
     verify_url = f"https://mathroneacademy.com/verify/{token}"
-    await EmailService.send(
-        payload.email,
-        "Verify your Mathrone Academy account ✅",
-        EmailService.template(
-            "Welcome to Mathrone Academy! 👑",
-            f"Hi {payload.full_name},<br><br>Thank you for joining Mathrone Academy! Please verify your email address to activate your account.",
-            verify_url,
-            "Verify My Email →"
+    try:
+        await EmailService.send(
+            payload.email,
+            "Verify your Mathrone Academy account ✅",
+            EmailService.template(
+                "Welcome to Mathrone Academy! 👑",
+                f"Hi {payload.full_name},<br><br>Thank you for joining Mathrone Academy! Please verify your email address to activate your account.",
+                verify_url,
+                "Verify My Email →"
+            )
         )
-    )
+    except Exception as email_err:
+        print(f"⚠️ Verification email failed for {payload.email}: {email_err}")
     # Notify all admins
     admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
     for admin in admins:
         await NotificationService.create(
             admin["id"], "application_update",
             f"New Tutor Application: {payload.full_name}",
-            f"Application for {', '.join(payload.subjects)} has been submitted.",
+            f"Application for {', '.join(payload.subjects) or 'various subjects'} has been submitted.",
             sb,
         )
 
@@ -322,12 +342,21 @@ async def register_tutor(payload: RegisterTutorRequest):
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest):
     """Login with email and password."""
+    if len(payload.password) > 128 or len(payload.email) > 254:
+        raise HTTPException(400, "Invalid credentials")
+        
+    email_clean = payload.email.strip().lower()
     sb = get_supabase()
+    
     try:
         resp = sb.auth.sign_in_with_password({
-            "email":    payload.email,
+            "email":    email_clean,
             "password": payload.password,
         })
+    except AuthApiError as e:
+        if "email not confirmed" in e.message.lower():
+            raise HTTPException(403, "Please verify your email before logging in. Check your inbox for the verification link.")
+        raise HTTPException(401, "Invalid email or password")
     except Exception:
         raise HTTPException(401, "Invalid email or password")
 
@@ -341,8 +370,10 @@ async def login(payload: LoginRequest):
 
     if not profile:
         raise HTTPException(401, "Profile not found")
-    if not profile.get("is_active"):
+    if not profile.get("is_active", True):
         raise HTTPException(403, "Account is deactivated. Contact support.")
+    if not profile.get("is_verified") and profile.get("role") != "admin":
+        raise HTTPException(403, "Please verify your email before logging in. Check your inbox for the verification link.")
 
     access_token  = create_access_token({"sub": user_id, "role": profile["role"]})
     refresh_token = create_refresh_token({"sub": user_id})
@@ -424,12 +455,47 @@ async def verify_email(token: str):
         profile = sb.table("profiles").select("id, full_name, email").eq("verify_token", token).single().execute().data
     except Exception:
         raise HTTPException(400, "Invalid or expired verification link")
+        
+    # Crucial Fix: Force email confirmation in Supabase Auth to unblock login
+    try:
+        sb.auth.admin.update_user_by_id(profile["id"], {"email_confirm": True})
+    except Exception:
+        pass
+
     sb.table("profiles").update({
         "is_verified": True,
         "verify_token": None
     }).eq("id", profile["id"]).execute()
     return {"message": "Email verified successfully! You can now log in."}
 
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+@router.post("/resend-verification", response_model=MessageResponse)
+async def resend_verification(payload: ResendVerificationRequest):
+    sb = get_supabase_admin()
+    email_clean = payload.email.strip().lower()
+    try:
+        profile = sb.table("profiles").select("id, full_name, is_verified").ilike("email", email_clean).single().execute().data
+    except Exception:
+        return MessageResponse(message="If that email exists, a verification link has been sent.")
+    if profile.get("is_verified"):
+        return MessageResponse(message="This email is already verified. Please log in.")
+    token = secrets.token_urlsafe(32)
+    sb.table("profiles").update({"verify_token": token}).eq("id", profile["id"]).execute()
+    verify_url = f"https://mathroneacademy.com/verify/{token}"
+    await EmailService.send(
+        email_clean,
+        "Verify your Mathrone Academy account ✅",
+        EmailService.template(
+            "Verify Your Email 📧",
+            f"Hi {profile['full_name']},<br><br>Click the button below to verify your email and activate your account.",
+            verify_url,
+            "Verify My Email →"
+        )
+    )
+    return MessageResponse(message="Verification email sent! Please check your inbox.")
 
 @router.post("/change-password", response_model=MessageResponse)
 async def change_password(
@@ -455,8 +521,9 @@ async def forgot_password(payload: ForgotPasswordRequest):
     from datetime import datetime, timedelta
     from app.services.email_service import EmailService
     sb = get_supabase_admin()
+    email_clean = payload.email.strip().lower()
     try:
-        profile = sb.table("profiles").select("id, full_name, email").eq("email", payload.email).single().execute().data
+        profile = sb.table("profiles").select("id, full_name, email").ilike("email", email_clean).single().execute().data
     except Exception:
         return MessageResponse(message="If that email exists, a reset link has been sent.")
     token   = secrets.token_urlsafe(32)
@@ -468,7 +535,7 @@ async def forgot_password(payload: ForgotPasswordRequest):
     reset_url = f"https://mathroneacademy.com/reset/{token}"
     try:
         await EmailService.send(
-            payload.email,
+            email_clean,
             "Reset your Mathrone Academy password 🔑",
             EmailService.template(
                 "Password Reset Request 🔑",

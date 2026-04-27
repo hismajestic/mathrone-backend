@@ -32,7 +32,13 @@ async def _groq(messages: list) -> str:
                 "Authorization": f"Bearer {settings.groq_api_key}",
                 "Content-Type": "application/json",
             },
-            json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 1024}
+            json={
+                "model": GROQ_MODEL, 
+                "messages": messages, 
+                "temperature": 0.2, 
+                "max_tokens": 1024,
+                "response_format": {"type": "json_object"}
+            }
         )
         if r.status_code == 429:
             raise Exception("AI service is busy. Please wait a moment and try again.")
@@ -71,13 +77,17 @@ Respond ONLY with JSON:
     try:
         raw = await _groq(messages)
         result = json.loads(_strip_fences(raw))
-        marks = max(0, min(int(result.get("marks_awarded", 0)), max_marks))
+        try:
+            awarded = int(result.get("marks_awarded", 0))
+        except (TypeError, ValueError):
+            awarded = 0
+        marks = max(0, min(awarded, max_marks))
         return {
             "marks_awarded": marks,
             "feedback": result.get("feedback", ""),
             "confidence": result.get("confidence", "medium"),
-            "key_points_hit": result.get("key_points_hit", []),
-            "key_points_missed": result.get("key_points_missed", [])
+            "key_points_hit": result.get("key_points_hit", []) if isinstance(result.get("key_points_hit"), list) else [],
+            "key_points_missed": result.get("key_points_missed", []) if isinstance(result.get("key_points_missed"), list) else []
         }
     except json.JSONDecodeError:
         return {"marks_awarded": None, "feedback": "AI returned invalid response — grade manually.", "confidence": "none", "key_points_hit": [], "key_points_missed": []}
