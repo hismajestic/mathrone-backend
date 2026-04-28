@@ -115,7 +115,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Application Received, {name}! 📋",
                 f"Thank you for applying to become a tutor at Mathrone Academy.<br><br>We have received your application and our team will review your CV and certificates shortly. You will hear from us within 3-5 business days.<br><br>In the meantime, make sure your profile is complete and your documents are up to date.",
-                "https://mathroneacademy.com/#login",
+                "https://mathroneacademy.com/login",
                 "View My Application →"
             )
         ),
@@ -124,7 +124,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Good news, {name}! Your application is being reviewed 🔍",
                 f"Our admin team is currently reviewing your application, CV, and certificates.<br><br>We will contact you soon with the next steps. Thank you for your patience.",
-                "https://mathroneacademy.com/#login",
+                "https://mathroneacademy.com/login",
                 "View My Profile →"
             )
         ),
@@ -133,7 +133,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Congratulations {name}! You passed the review stage 🎉",
                 f"You have been invited to complete a written examination as part of our tutor vetting process.<br><br>Please log in to your Mathrone Academy account to access your exam. The exam is timed — <strong>60 minutes</strong> — and must be completed in one sitting.<br><br><strong>Important rules:</strong><br>• Do not switch tabs during the exam<br>• Stay in fullscreen mode<br>• Do not copy or paste answers<br>• Submit before the timer runs out",
-                "https://mathroneacademy.com/#login",
+                "https://mathroneacademy.com/login",
                 "Take My Exam Now →"
             )
         ),
@@ -142,7 +142,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"{'Well done' if score_grade in ('excellent','good') else 'Thank you'}, {name}! You are invited for an interview 🌟",
                 f"{score_msg + '<br><br>' if score_msg else ''}You have been selected for an interview with our team. We will contact you shortly to schedule a convenient time.<br><br>{'Your strong performance shows great potential as a Mathrone tutor.' if score_grade == 'excellent' else 'Please prepare to discuss your teaching experience and methodology.' if score_grade in ('good','satisfactory') else 'Please prepare to discuss how you plan to improve your subject knowledge.'}<br><br>Make sure your profile bio and documents are complete before the interview.",
-                "https://mathroneacademy.com/#login",
+                "https://mathroneacademy.com/login",
                 "Prepare for Interview →"
             )
         ),
@@ -151,7 +151,7 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             EmailService.template(
                 f"Welcome aboard, {name}! 🎓",
                 f"We are thrilled to inform you that you have successfully passed all stages of our vetting process and are now an <strong>approved tutor</strong> on Mathrone Academy.<br><br>{score_msg + '<br><br>' if score_msg else ''}You will be assigned to students shortly. Please make sure your profile, bio, and payment preferences are complete before your first session.<br><br>Welcome to the Mathrone family — let's change education in Rwanda together! 👑",
-                "https://mathroneacademy.com/#login",
+                "https://mathroneacademy.com/login",
                 "Go to My Dashboard →"
             )
         ),
