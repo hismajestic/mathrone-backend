@@ -34,50 +34,24 @@ def _wait_for_profile(sb, user_id: str, retries: int = 5) -> dict:
 
 
 def _create_user_via_supabase(email: str, password: str, full_name: str, role: str):
-    """Try creating a Supabase user (admin API), with a fallback to public signup."""
-    import httpx
     sb_admin = get_supabase_admin()
-    sb_anon  = get_supabase()
-    
     email_clean = email.strip().lower()
+    role_clean = role.lower().strip() 
 
     try:
-        print(f"📝 Attempting to create user via admin API: {email_clean} ({role})")
         return sb_admin.auth.admin.create_user({
             "email":         email_clean,
             "password":      password,
-            "email_confirm": True,
+            "email_confirm": False, # Forces Supabase to mark user as unconfirmed
             "user_metadata": {
-            "full_name": full_name, 
-            "role": role.lower().strip() 
-        },
+                "full_name": full_name, 
+                "role": role_clean 
+            },
         })
     except AuthApiError as e:
-        err_msg = e.message.lower()
-        print(f"⚠️ Auth API error: {str(e)}")
-        # Email already registered — surface a clean message immediately
-        if "already" in err_msg or "exists" in err_msg or "registered" in err_msg:
-            raise HTTPException(400, "An account with this email already exists. Please log in instead.")
-        # Try the public signup endpoint as a fallback
-        print(f"🔄 Falling back to public signup...")
-        try:
-            result = sb_anon.auth.sign_up({
-                "email": email_clean,
-                "password": password,
-                "options": {"data": {"full_name": full_name, "role": role}},
-            })
-            # sign_up returns a user even for existing emails (Supabase behaviour) — check it's real
-            if not result.user or not result.user.id:
-                raise HTTPException(400, "Registration failed: could not create account. Please try again.")
-            print(f"✅ User created via public signup: {result.user.id}")
-            return result
-        except HTTPException:
-            raise
-        except (httpx.ConnectTimeout, httpx.ConnectError, Exception) as e2:
-            print(f"🔴 Registration error (fallback failed): {str(e2)}")
-            import traceback
-            traceback.print_exc()
-            raise HTTPException(400, f"Registration failed: {str(e2)}. Please check your connection and try again.")
+        if "already" in e.message.lower():
+            raise HTTPException(400, "Email already registered.")
+        raise HTTPException(400, e.message)
         
 async def send_recruitment_email(email: str, name: str, status: str, score: int = None, reason: str = None):
     from app.services.email_service import EmailService
@@ -175,13 +149,8 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
 async def register_student(payload: RegisterStudentRequest):
     """Register a new student / parent account."""
     payload.email = payload.email.strip().lower()
-    if len(payload.full_name) > 100:
-        raise HTTPException(400, "Name is too long")
-    if len(payload.password) < 6 or len(payload.password) > 128:
-        raise HTTPException(400, "Password must be between 6 and 128 characters")
     sb = get_supabase_admin()
 
-    print(f"📋 Starting student registration for: {payload.email}")
     auth_resp = _create_user_via_supabase(
         payload.email, payload.password, payload.full_name, "student"
     )
@@ -190,30 +159,14 @@ async def register_student(payload: RegisterStudentRequest):
     if not user_id:
         raise HTTPException(500, "Failed to create user account")
 
-    print(f"✅ Auth user created: {user_id}")
-
-    # Robust re-fetch logic with retries to wait for the DB trigger
-    profile = None
-    for i in range(10):  # Try 10 times (max 2 seconds)
-        try:
-            profile_res = sb.table("profiles").select("*").eq("id", user_id).single().execute()
-            if profile_res.data:
-                profile = profile_res.data
-                break
-        except Exception:
-            pass
-        time.sleep(0.2)  # Wait 200ms before trying again
-    
-    if not profile:
-        raise HTTPException(500, "Account created, but profile initialization timed out. Please try logging in.")
-
-    print(f"✅ Profile created: {user_id}")
+    # WAIT for the trigger to create the profile row
+    profile = _wait_for_profile(sb, user_id)
 
     # Create student record
     try:
         sb.table("students").insert({
             "profile_id":      user_id,
-            "school_level":    payload.school_level,
+            "school_level":    payload.school_level or "",
             "subjects_needed": payload.subjects_needed,
             "preferred_mode":  payload.preferred_mode.value,
             "home_location":   payload.home_location,
@@ -222,42 +175,29 @@ async def register_student(payload: RegisterStudentRequest):
             "category":        payload.category or 'academic',
         }).execute()
     except Exception as e:
-        print(f"🔴 Student insert error for {user_id}: {str(e)}")
-        import traceback
-        traceback.print_exc()
         raise HTTPException(500, f"Failed to create student record: {str(e)}")
 
-    # Send verification email
+    # Generate verification token
     token = secrets.token_urlsafe(32)
-    sb.table("profiles").update({"verify_token": token}).eq("id", user_id).execute()
+    sb.table("profiles").update({
+        "verify_token": token,
+        "is_verified": False
+    }).eq("id", user_id).execute()
+
+    # Send Gmail
     verify_url = f"https://mathroneacademy.com/verify/{token}"
-    try:
-        await EmailService.send(
-            payload.email,
-            "Verify your Mathrone Academy account ✅",
-            EmailService.template(
-                "Welcome to Mathrone Academy! 👑",
-                f"Hi {payload.full_name},<br><br>Thank you for joining Mathrone Academy! Please verify your email address to activate your account.",
-                verify_url,
-                "Verify My Email →"
-            )
+    await EmailService.send(
+        payload.email,
+        "Verify your account — Mathrone Academy",
+        EmailService.template(
+            "Welcome!",
+            f"Hi {payload.full_name}, please verify your email to activate your account.",
+            verify_url,
+            "Verify My Email →"
         )
-    except Exception as email_err:
-        print(f"⚠️ Verification email failed for {payload.email}: {email_err}")
-    # Welcome notification
-    await NotificationService.create(
-        user_id, "general",
-        "Welcome to TutorConnect Academy! 🎓",
-        "Your account is ready. Our team will assign you a tutor shortly.",
-        sb,
     )
 
-    # Re-fetch profile after role update
-    profile = sb.table("profiles").select("*").eq("id", user_id).single().execute().data
-
-    access_token  = create_access_token({"sub": user_id, "role": "student"})
-    refresh_token = create_refresh_token({"sub": user_id})
-    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=profile)
+    return TokenResponse(access_token="pending", refresh_token="pending", user=profile)
 
 @router.post("/register/tutor", response_model=TokenResponse, status_code=201)
 async def register_tutor(payload: RegisterTutorRequest):
@@ -282,10 +222,9 @@ async def register_tutor(payload: RegisterTutorRequest):
 
     print(f"✅ Auth user created: {user_id}")
 
-    # Update profile role/phone and re-fetch
-    time.sleep(0.3)
+    # WAIT for the trigger to create the profile row, then update
+    profile = _wait_for_profile(sb, user_id)
     sb.table("profiles").update({"role": "tutor", "phone": payload.phone}).eq("id", user_id).execute()
-    profile = sb.table("profiles").select("*").eq("id", user_id).single().execute().data
 
     print(f"✅ Profile created and updated: {user_id}")
 
@@ -311,23 +250,28 @@ async def register_tutor(payload: RegisterTutorRequest):
         traceback.print_exc()
         raise HTTPException(500, f"Failed to create tutor record: {str(e)}")
 
-    # Send verification email
+    # Generate verification token and set verified to False
     token = secrets.token_urlsafe(32)
-    sb.table("profiles").update({"verify_token": token}).eq("id", user_id).execute()
+    sb.table("profiles").update({
+        "is_verified": False,
+        "verify_token": token,
+    }).eq("id", user_id).execute()
+    
     verify_url = f"https://mathroneacademy.com/verify/{token}"
+    
     try:
         await EmailService.send(
             payload.email,
-            "Verify your Mathrone Academy account ✅",
+            "Verify your tutor account — Mathrone Academy ✅",
             EmailService.template(
-                "Welcome to Mathrone Academy! 👑",
-                f"Hi {payload.full_name},<br><br>Thank you for joining Mathrone Academy! Please verify your email address to activate your account.",
+                "Verify Your Email! 📧",
+                f"Hi {payload.full_name},<br><br>Thank you for applying to Mathrone Academy. Please verify your email to activate your account. Once verified, our team will review your application within 3–5 business days.",
                 verify_url,
                 "Verify My Email →"
             )
         )
     except Exception as email_err:
-        print(f"⚠️ Verification email failed for {payload.email}: {email_err}")
+        print(f"⚠️ Welcome email failed for {payload.email}: {email_err}")
     # Notify all admins
     admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
     for admin in admins:
