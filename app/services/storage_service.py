@@ -9,34 +9,32 @@ class StorageService:
 
     @staticmethod
     async def _upload(file: UploadFile, bucket: str, path: str) -> str:
-        """Generic upload. Removes existing file first to avoid duplicate errors,
-        then uploads fresh. Returns the public URL."""
         sb = get_supabase_admin()
+        chunk_size = 1024 * 1024
+        size = 0
+        contents = bytearray()
+        
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk: break
+            size += len(chunk)
+            if size > settings.max_upload_size_mb * 1024 * 1024:
+                raise HTTPException(413, f"File too large. Max {settings.max_upload_size_mb}MB")
+            contents.extend(chunk)
 
-        contents = await file.read()
-        size_mb = len(contents) / (1024 * 1024)
-        if size_mb > settings.max_upload_size_mb:
-            raise HTTPException(
-                400, f"File too large. Max size is {settings.max_upload_size_mb} MB"
-            )
-
-        # Remove any existing file at this path (upsert workaround for Supabase SDK)
-        try:
-            sb.storage.from_(bucket).remove([path])
-        except Exception:
-            pass  # OK if file doesn't exist yet
+        try: sb.storage.from_(bucket).remove([path])
+        except: pass
 
         try:
             sb.storage.from_(bucket).upload(
                 path=path,
-                file=contents,
+                file=bytes(contents),
                 file_options={"content-type": file.content_type or "application/octet-stream"},
             )
         except Exception as e:
             raise HTTPException(500, f"Upload failed: {str(e)}")
 
-        url = sb.storage.from_(bucket).get_public_url(path)
-        return url
+        return sb.storage.from_(bucket).get_public_url(path)
 
     @staticmethod
     async def upload_cv(file: UploadFile, user_id: str) -> str:

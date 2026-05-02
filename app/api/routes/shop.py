@@ -374,20 +374,11 @@ async def delete_product_video(product_id: str, admin: dict = Depends(require_ad
 
 # ─── dynamic product delete LAST so it never swallows static routes ───
 
-@router.put("/products/admin/{product_id}/toggle-status")
-async def toggle_product_status(product_id: str, admin: dict = Depends(require_admin)):
+@router.delete("/products/admin/{product_id}")
+async def delete_product(product_id: str, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
-
-    # Get current product status
-    product = sb.table("products").select("is_active").eq("id", product_id).execute()
-    if not product.data:
-        raise HTTPException(404, "Product not found")
-
-    current_status = product.data[0]["is_active"]
-
-    # Toggle the status
-    sb.table("products").update({"is_active": not current_status}).eq("id", product_id).execute()
-    return {"message": f"Product {'deactivated' if current_status else 'activated'}"}
+    sb.table("products").delete().eq("id", product_id).execute()
+    return {"message": "Product deleted"}
 
 # ─── BUNDLES ADMIN ────────────────────────────────────
 

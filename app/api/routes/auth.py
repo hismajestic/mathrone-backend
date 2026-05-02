@@ -32,27 +32,6 @@ def _wait_for_profile(sb, user_id: str, retries: int = 5) -> dict:
     raise HTTPException(500, "Profile creation timed out. Please try again.")
 
 
-def _ensure_profile(sb, user_id: str, full_name: str, email: str, role: str) -> dict:
-    """Ensure a profile row exists (handles cases where the Supabase trigger is missing)."""
-    try:
-        result = sb.table("profiles").select("*").eq("id", user_id).single().execute()
-        if result.data:
-            return result.data
-    except Exception:
-        pass
-
-    try:
-        sb.table("profiles").insert({
-            "id": user_id,
-            "full_name": full_name,
-            "email": email,
-            "role": role,
-        }).execute()
-        return {"id": user_id, "full_name": full_name, "email": email, "role": role}
-    except Exception:
-        # If insertion fails, fall back to waiting for the trigger
-        return _wait_for_profile(sb, user_id)
-
 
 def _create_user_via_supabase(email: str, password: str, full_name: str, role: str):
     """Try creating a Supabase user (admin API), with a fallback to public signup."""
@@ -63,18 +42,24 @@ def _create_user_via_supabase(email: str, password: str, full_name: str, role: s
     email_clean = email.strip().lower()
 
     try:
+        print(f"📝 Attempting to create user via admin API: {email_clean} ({role})")
         return sb_admin.auth.admin.create_user({
             "email":         email_clean,
             "password":      password,
             "email_confirm": True,
-            "user_metadata": {"full_name": full_name, "role": role},
+            "user_metadata": {
+            "full_name": full_name, 
+            "role": role.lower().strip() 
+        },
         })
     except AuthApiError as e:
         err_msg = e.message.lower()
+        print(f"⚠️ Auth API error: {str(e)}")
         # Email already registered — surface a clean message immediately
         if "already" in err_msg or "exists" in err_msg or "registered" in err_msg:
             raise HTTPException(400, "An account with this email already exists. Please log in instead.")
         # Try the public signup endpoint as a fallback
+        print(f"🔄 Falling back to public signup...")
         try:
             result = sb_anon.auth.sign_up({
                 "email": email_clean,
@@ -84,11 +69,15 @@ def _create_user_via_supabase(email: str, password: str, full_name: str, role: s
             # sign_up returns a user even for existing emails (Supabase behaviour) — check it's real
             if not result.user or not result.user.id:
                 raise HTTPException(400, "Registration failed: could not create account. Please try again.")
+            print(f"✅ User created via public signup: {result.user.id}")
             return result
         except HTTPException:
             raise
         except (httpx.ConnectTimeout, httpx.ConnectError, Exception) as e2:
-            raise HTTPException(400, f"Registration failed: {e.message}. Please check your connection and try again.")
+            print(f"🔴 Registration error (fallback failed): {str(e2)}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(400, f"Registration failed: {str(e2)}. Please check your connection and try again.")
         
 async def send_recruitment_email(email: str, name: str, status: str, score: int = None, reason: str = None):
     from app.services.email_service import EmailService
@@ -192,6 +181,7 @@ async def register_student(payload: RegisterStudentRequest):
         raise HTTPException(400, "Password must be between 6 and 128 characters")
     sb = get_supabase_admin()
 
+    print(f"📋 Starting student registration for: {payload.email}")
     auth_resp = _create_user_via_supabase(
         payload.email, payload.password, payload.full_name, "student"
     )
@@ -200,9 +190,24 @@ async def register_student(payload: RegisterStudentRequest):
     if not user_id:
         raise HTTPException(500, "Failed to create user account")
 
-    # Ensure profile exists
-    profile = _ensure_profile(sb, user_id, payload.full_name, payload.email, "student")
-    sb.table("profiles").update({"role": "student"}).eq("id", user_id).execute()
+    print(f"✅ Auth user created: {user_id}")
+
+    # Robust re-fetch logic with retries to wait for the DB trigger
+    profile = None
+    for i in range(10):  # Try 10 times (max 2 seconds)
+        try:
+            profile_res = sb.table("profiles").select("*").eq("id", user_id).single().execute()
+            if profile_res.data:
+                profile = profile_res.data
+                break
+        except Exception:
+            pass
+        time.sleep(0.2)  # Wait 200ms before trying again
+    
+    if not profile:
+        raise HTTPException(500, "Account created, but profile initialization timed out. Please try logging in.")
+
+    print(f"✅ Profile created: {user_id}")
 
     # Create student record
     try:
@@ -217,7 +222,10 @@ async def register_student(payload: RegisterStudentRequest):
             "category":        payload.category or 'academic',
         }).execute()
     except Exception as e:
-        raise HTTPException(400, f"Failed to create student record: {str(e)}")
+        print(f"🔴 Student insert error for {user_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to create student record: {str(e)}")
 
     # Send verification email
     token = secrets.token_urlsafe(32)
@@ -263,6 +271,7 @@ async def register_tutor(payload: RegisterTutorRequest):
         raise HTTPException(400, "Too many subjects listed")
     sb = get_supabase_admin()
 
+    print(f"📋 Starting tutor registration for: {payload.email}")
     auth_resp = _create_user_via_supabase(
         payload.email, payload.password, payload.full_name, "tutor"
     )
@@ -271,12 +280,14 @@ async def register_tutor(payload: RegisterTutorRequest):
     if not user_id:
         raise HTTPException(500, "Failed to create user account")
 
-    # Ensure profile exists
-    _ensure_profile(sb, user_id, payload.full_name, payload.email, "tutor")
-    sb.table("profiles").update({
-        "role":  "tutor",
-        "phone": payload.phone
-    }).eq("id", user_id).execute()
+    print(f"✅ Auth user created: {user_id}")
+
+    # Update profile role/phone and re-fetch
+    time.sleep(0.3)
+    sb.table("profiles").update({"role": "tutor", "phone": payload.phone}).eq("id", user_id).execute()
+    profile = sb.table("profiles").select("*").eq("id", user_id).single().execute().data
+
+    print(f"✅ Profile created and updated: {user_id}")
 
     # Create tutor record
     try:
@@ -295,7 +306,10 @@ async def register_tutor(payload: RegisterTutorRequest):
             "location":          payload.location,
         }).execute()
     except Exception as e:
-        raise HTTPException(400, f"Failed to create tutor record: {str(e)}")
+        print(f"🔴 Tutor insert error for {user_id}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to create tutor record: {str(e)}")
 
     # Send verification email
     token = secrets.token_urlsafe(32)

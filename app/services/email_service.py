@@ -1,6 +1,4 @@
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import resend
 from app.core.config import settings
 import logging
 
@@ -10,47 +8,51 @@ class EmailService:
 
     @staticmethod
     async def send(to_email: str, subject: str, html_body: str):
-        if not settings.smtp_user or not settings.smtp_password:
-            logger.warning("SMTP not configured — skipping email")
+        if not settings.resend_api_key:
+            logger.warning("Resend API Key not configured — skipping email")
             return
+        
         try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"]    = f"{settings.from_name} <{settings.from_email}>"
-            msg["To"]      = to_email
-            msg.attach(MIMEText(html_body, "html"))
-            with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
-                server.starttls()
-                server.login(settings.smtp_user, settings.smtp_password)
-                server.sendmail(settings.from_email, to_email, msg.as_string())
-            logger.info(f"Email sent to {to_email}: {subject}")
+            resend.api_key = settings.resend_api_key
+            
+            params = {
+                "from": f"{settings.from_name} <{settings.from_email}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+            }
+
+            # This uses the Resend API (HTTPS), which cloud providers never block
+            email = resend.Emails.send(params)
+            logger.info(f"Email sent via Resend to {to_email}: {subject} (ID: {email['id']})")
+            return email
         except Exception as e:
-            logger.error(f"Email failed to {to_email}: {e}")
+            logger.error(f"Resend Email failed to {to_email}: {str(e)}")
+            # Fallback for dev: log it so you can still see the token if email fails
+            print(f"\n--- EMAIL FAILED ---\nTo: {to_email}\nSubject: {subject}\nBody preview: {html_body[:100]}...\n--------------------\n")
 
     @staticmethod
     def template(title: str, body: str, action_url: str = None, action_label: str = None) -> str:
         action_btn = f"""
-        <div style="text-align:center;margin:24px 0">
-          <a href="{action_url}" style="background:#2563eb;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px">{action_label}</a>
+        <div style="text-align:center;margin:32px 0">
+          <a href="{action_url}" style="background-color:#1A5FFF;color:#ffffff;padding:14px 30px;border-radius:10px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;box-shadow:0 4px 12px rgba(26,95,255,0.3)">{action_label}</a>
         </div>""" if action_url and action_label else ""
 
         return f"""
         <!DOCTYPE html>
         <html>
-        <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-        <body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-serif">
-          <div style="max-width:600px;margin:40px auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
-            <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:32px 40px;text-align:center">
-              <div style="font-size:36px;margin-bottom:8px">👑</div>
-              <h1 style="color:#fff;margin:0;font-size:22px;font-weight:800">Mathrone Academy</h1>
+        <head><meta charset="utf-8"></head>
+        <body style="margin:0;padding:0;background-color:#F8FAFE;font-family:sans-serif;">
+          <div style="max-width:600px;margin:20px auto;background-color:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #EEF2FA">
+            <div style="background-color:#0D1B40;padding:40px 20px;text-align:center">
+              <img src="https://hdpkjomganndiiprnpok.supabase.co/storage/v1/object/public/assets/mathrone%20logo1.png" style="height:50px;width:auto;filter:brightness(0) invert(1)"/>
             </div>
-            <div style="padding:32px 40px">
-              <h2 style="color:#1e3a5f;font-size:20px;margin:0 0 16px">{title}</h2>
-              <div style="color:#475569;font-size:15px;line-height:1.6;margin:0 0 16px">{body}</div>
+            <div style="padding:40px 30px">
+              <h2 style="color:#0D1B40;font-size:22px;margin-top:0">{title}</h2>
+              <div style="color:#4A5578;font-size:16px;line-height:1.7">{body}</div>
               {action_btn}
-            </div>
-            <div style="background:#f8fafc;padding:20px 40px;text-align:center;border-top:1px solid #e2e8f0">
-              <p style="color:#94a3b8;font-size:12px;margin:0">© 2025 Mathrone Academy. All rights reserved.</p>
+              <hr style="border:none;border-top:1px solid #EEF2FA;margin:30px 0"/>
+              <p style="color:#8A98B8;font-size:13px">If you didn't expect this email, you can safely ignore it.</p>
             </div>
           </div>
         </body>

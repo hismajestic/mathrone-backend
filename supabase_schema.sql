@@ -369,17 +369,35 @@ ALTER TABLE public.conversations     ENABLE ROW LEVEL SECURITY;ALTER TABLE publi
 ALTER TABLE public.newsletter_subscriptions ENABLE ROW LEVEL SECURITY;
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS "profiles_select"         ON public.profiles;
+DROP POLICY IF EXISTS "profiles_insert"         ON public.profiles;
 DROP POLICY IF EXISTS "profiles_update"         ON public.profiles;
 DROP POLICY IF EXISTS "students_select"         ON public.students;
+DROP POLICY IF EXISTS "students_insert"         ON public.students;
+DROP POLICY IF EXISTS "students_update"         ON public.students;
 DROP POLICY IF EXISTS "tutors_select"           ON public.tutors;
+DROP POLICY IF EXISTS "tutors_insert"           ON public.tutors;
+DROP POLICY IF EXISTS "tutors_update"           ON public.tutors;
 DROP POLICY IF EXISTS "sessions_select"         ON public.sessions;
+DROP POLICY IF EXISTS "sessions_insert"         ON public.sessions;
+DROP POLICY IF EXISTS "sessions_update"         ON public.sessions;
 DROP POLICY IF EXISTS "messages_select"         ON public.messages;
+DROP POLICY IF EXISTS "messages_insert"         ON public.messages;
+DROP POLICY IF EXISTS "messages_update"         ON public.messages;
 DROP POLICY IF EXISTS "notifications_select"    ON public.notifications;
+DROP POLICY IF EXISTS "notifications_insert"    ON public.notifications;
 DROP POLICY IF EXISTS "notifications_update"    ON public.notifications;
 DROP POLICY IF EXISTS "conversations_select"    ON public.conversations;
+DROP POLICY IF EXISTS "conversations_insert"    ON public.conversations;
+DROP POLICY IF EXISTS "conversations_update"    ON public.conversations;
 DROP POLICY IF EXISTS "invoices_select"         ON public.invoices;
+DROP POLICY IF EXISTS "invoices_insert"         ON public.invoices;
+DROP POLICY IF EXISTS "invoices_update"         ON public.invoices;
 DROP POLICY IF EXISTS "assignments_select"      ON public.assignments;
+DROP POLICY IF EXISTS "assignments_insert"      ON public.assignments;
+DROP POLICY IF EXISTS "assignments_update"      ON public.assignments;
 DROP POLICY IF EXISTS "reviews_select"          ON public.reviews;
+DROP POLICY IF EXISTS "reviews_insert"          ON public.reviews;
+DROP POLICY IF EXISTS "reviews_update"          ON public.reviews;
 DROP POLICY IF EXISTS "news_posts_select"       ON public.news_posts;
 DROP POLICY IF EXISTS "newsletter_subscriptions_select" ON public.newsletter_subscriptions;
 DROP POLICY IF EXISTS "newsletter_subscriptions_insert" ON public.newsletter_subscriptions;
@@ -388,12 +406,27 @@ DROP POLICY IF EXISTS "newsletter_subscriptions_insert" ON public.newsletter_sub
 CREATE POLICY "profiles_select" ON public.profiles
     FOR SELECT USING (TRUE);
 
+CREATE POLICY "profiles_insert" ON public.profiles
+    FOR INSERT WITH CHECK (TRUE);
+
 CREATE POLICY "profiles_update" ON public.profiles
-    FOR UPDATE USING (auth.uid() = id);
+    FOR UPDATE USING (auth.uid() = id OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'));
 
 -- Students: owner or admin
 CREATE POLICY "students_select" ON public.students
     FOR SELECT USING (
+        profile_id = auth.uid()
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "students_insert" ON public.students
+    FOR INSERT WITH CHECK (
+        profile_id = auth.uid()
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "students_update" ON public.students
+    FOR UPDATE USING (
         profile_id = auth.uid()
         OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
     );
@@ -406,9 +439,35 @@ CREATE POLICY "tutors_select" ON public.tutors
         OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
     );
 
+CREATE POLICY "tutors_insert" ON public.tutors
+    FOR INSERT WITH CHECK (
+        profile_id = auth.uid()
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "tutors_update" ON public.tutors
+    FOR UPDATE USING (
+        profile_id = auth.uid()
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
 -- Sessions: participants or admin
 CREATE POLICY "sessions_select" ON public.sessions
     FOR SELECT USING (
+        EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.tutors  t WHERE t.id = tutor_id   AND t.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "sessions_insert" ON public.sessions
+    FOR INSERT WITH CHECK (
+        EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.tutors  t WHERE t.id = tutor_id   AND t.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "sessions_update" ON public.sessions
+    FOR UPDATE USING (
         EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
         OR EXISTS (SELECT 1 FROM public.tutors  t WHERE t.id = tutor_id   AND t.profile_id = auth.uid())
         OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
@@ -424,9 +483,36 @@ CREATE POLICY "messages_select" ON public.messages
         )
     );
 
+CREATE POLICY "messages_insert" ON public.messages
+    FOR INSERT WITH CHECK (
+        sender_id = auth.uid()
+        AND EXISTS (
+            SELECT 1 FROM public.conversations c
+            WHERE c.id = conversation_id
+            AND (c.participant_a = auth.uid() OR c.participant_b = auth.uid())
+        )
+    );
+
+CREATE POLICY "messages_update" ON public.messages
+    FOR UPDATE USING (sender_id = auth.uid());
+
 -- Conversations: participants or admin
 CREATE POLICY "conversations_select" ON public.conversations
     FOR SELECT USING (
+        participant_a = auth.uid()
+        OR participant_b = auth.uid()
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "conversations_insert" ON public.conversations
+    FOR INSERT WITH CHECK (
+        participant_a = auth.uid()
+        OR participant_b = auth.uid()
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "conversations_update" ON public.conversations
+    FOR UPDATE USING (
         participant_a = auth.uid()
         OR participant_b = auth.uid()
         OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
@@ -436,12 +522,27 @@ CREATE POLICY "conversations_select" ON public.conversations
 CREATE POLICY "notifications_select" ON public.notifications
     FOR SELECT USING (user_id = auth.uid());
 
+CREATE POLICY "notifications_insert" ON public.notifications
+    FOR INSERT WITH CHECK (user_id = auth.uid() OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin'));
+
 CREATE POLICY "notifications_update" ON public.notifications
     FOR UPDATE USING (user_id = auth.uid());
 
 -- Invoices: student owner or admin
 CREATE POLICY "invoices_select" ON public.invoices
     FOR SELECT USING (
+        EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "invoices_insert" ON public.invoices
+    FOR INSERT WITH CHECK (
+        EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "invoices_update" ON public.invoices
+    FOR UPDATE USING (
         EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
         OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
     );
@@ -454,9 +555,35 @@ CREATE POLICY "assignments_select" ON public.assignments
         OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
     );
 
+CREATE POLICY "assignments_insert" ON public.assignments
+    FOR INSERT WITH CHECK (
+        EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.tutors  t WHERE t.id = tutor_id   AND t.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "assignments_update" ON public.assignments
+    FOR UPDATE USING (
+        EXISTS (SELECT 1 FROM public.students s WHERE s.id = student_id AND s.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.tutors  t WHERE t.id = tutor_id   AND t.profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
 -- Reviews: public
 CREATE POLICY "reviews_select" ON public.reviews
     FOR SELECT USING (TRUE);
+
+CREATE POLICY "reviews_insert" ON public.reviews
+    FOR INSERT WITH CHECK (
+        student_id IN (SELECT id FROM public.students WHERE profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
+
+CREATE POLICY "reviews_update" ON public.reviews
+    FOR UPDATE USING (
+        student_id IN (SELECT id FROM public.students WHERE profile_id = auth.uid())
+        OR EXISTS (SELECT 1 FROM public.profiles WHERE id = auth.uid() AND role = 'admin')
+    );
 
 -- News posts: public read
 CREATE POLICY "news_posts_select" ON public.news_posts
@@ -501,7 +628,7 @@ BEGIN
         NEW.id,
         COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
         NEW.email,
-        COALESCE((NEW.raw_user_meta_data->>'role')::user_role, 'student')
+        COALESCE((NEW.raw_user_meta_data->>'role')::user_role, 'student'::user_role)
     )
     ON CONFLICT (id) DO NOTHING;
     RETURN NEW;
@@ -802,15 +929,16 @@ CREATE TABLE IF NOT EXISTS public.contact_messages (
 -- ============================================================
 -- PLATFORM SETTINGS
 -- ============================================================
-CREATE TABLE IF NOT EXISTS public.platform_settings (
+DROP TABLE IF EXISTS public.platform_settings CASCADE;
+CREATE TABLE public.platform_settings (
     id              SERIAL  PRIMARY KEY,
     is_recruiting   BOOLEAN DEFAULT TRUE,
     quiz_enabled    BOOLEAN DEFAULT TRUE,
     updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
-INSERT INTO public.platform_settings (id, is_recruiting, quiz_enabled)
-VALUES (1, TRUE, TRUE)
-ON CONFLICT (id) DO NOTHING;
+INSERT INTO public.platform_settings (is_recruiting, quiz_enabled)
+VALUES (TRUE, TRUE)
+ON CONFLICT DO NOTHING;
 
 -- TUTOR DOCUMENTS
 CREATE TABLE IF NOT EXISTS public.tutor_documents (

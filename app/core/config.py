@@ -20,12 +20,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 30
 
-    # Email (optional — leave blank to skip)
-    smtp_host: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    from_email: str = "noreply@tutorconnect.academy"
+    # Email — Using Resend API for 100% Reliability
+    resend_api_key: str = "" # Set this in your .env file
+    from_email: str = "contact.mathroneacademy.com" # Change to your domain email after verifying DNS
     from_name: str = "Mathrone Academy"
 
     # Storage buckets — must match bucket names you created in Supabase

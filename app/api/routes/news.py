@@ -458,22 +458,43 @@ async def subscribe_newsletter(payload: NewsletterSubscribe):
         if "duplicate key" in str(e):
             raise HTTPException(400, "Email already subscribed")
         raise HTTPException(400, "Subscription failed")
+from PIL import Image
+import io
+
 @router.post("/upload-image")
 async def upload_news_image(
     file: UploadFile = File(...),
     admin: dict = Depends(require_admin)
 ):
     sb = get_supabase_admin()
-    contents = await file.read()
-    ext = file.filename.split('.')[-1].lower()
-    if ext not in ['jpg','jpeg','png','webp','gif']:
-        raise HTTPException(400, "Only JPG, PNG, WebP or GIF allowed")
+    
+    # 1. Load image into Pillow
+    try:
+        contents = await file.read()
+        img = Image.open(io.BytesIO(contents))
+    except Exception:
+        raise HTTPException(400, "Invalid image file")
+
+    # 2. Convert to RGB (removes Alpha channel transparency for smaller JPEGs)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    # 3. Smart Resize (Max 1200px width/height while keeping aspect ratio)
+    img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+
+    # 4. Compress and Save to a buffer
+    output = io.BytesIO()
+    img.save(output, format="JPEG", quality=85, optimize=True)
+    output.seek(0)
+
+    # 5. Upload to Supabase
     import uuid
-    path = f"news/{uuid.uuid4()}.{ext}"
+    path = f"news/{uuid.uuid4()}.jpg"
     sb.storage.from_("news-images").upload(
-        path, contents,
-        file_options={"content-type": file.content_type, "upsert": "true"}
+        path, output.read(),
+        file_options={"content-type": "image/jpeg", "upsert": "true"}
     )
+    
     url = sb.storage.from_("news-images").get_public_url(path)
     return {"url": url}
 from fastapi.responses import HTMLResponse
