@@ -127,6 +127,25 @@ class TutorStatusUpdate(BaseModel):
     hourly_rate:     Optional[float] = None
     salary_frequency: Optional[str] = None
 
+
+class AvailabilitySlot(BaseModel):
+    """Represents a tutor's available time slot (e.g., Monday 3-5 PM)."""
+    day:     str   # 'Monday', 'Tuesday', etc.
+    start:   str   # '14:00' (24-hour format)
+    end:     str   # '17:00'
+
+
+class TutorAvailabilityUpdate(BaseModel):
+    """Update tutor's available time slots."""
+    availability: List[AvailabilitySlot] = []
+
+
+class TutorAgreement(BaseModel):
+    """Tutor signs agreement/terms of service."""
+    agreed: bool
+    timestamp: Optional[datetime] = None
+
+
 # ── Student ────────────────────────────────────────────────────────────────────
 class StudentUpdate(BaseModel):
     school_level:    Optional[str] = None
@@ -170,6 +189,16 @@ class SessionCreate(BaseModel):
     assignment_id: Optional[str] = None
 
 
+class StudentSessionBooking(BaseModel):
+    """Student books a tutor for an available time slot."""
+    assignment_id: str
+    scheduled_at:  datetime
+    duration_mins: int = 60
+    mode:          SessionMode
+    location:      Optional[str] = None
+    notes:         Optional[str] = None
+
+
 class SessionUpdate(BaseModel):
     status:       Optional[SessionStatus] = None
     scheduled_at: Optional[datetime] = None
@@ -177,6 +206,15 @@ class SessionUpdate(BaseModel):
     tutor_notes:  Optional[str] = None
     actual_start: Optional[datetime] = None
     actual_end:   Optional[datetime] = None
+
+
+class SessionWebhookPayload(BaseModel):
+    """Jitsi or meeting platform webhook for session start/end."""
+    session_id:   str
+    event:        str   # 'started' | 'ended'
+    timestamp:    datetime
+    room_name:    Optional[str] = None
+    participants: Optional[int] = None
 
 
 class SessionReview(BaseModel):

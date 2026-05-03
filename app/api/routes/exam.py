@@ -114,10 +114,12 @@ def grade_matching(pairs: list, user_answer: str) -> tuple[int, int]:
 class QuestionCreate(BaseModel):
     question: str
     type: str
+    subject: Optional[str] = "general"
+    image_url: Optional[str] = None      # <--- Added this
     options: Optional[List[str]] = None
     correct_answer: Optional[str] = None
-    model_answer: Optional[str] = None   # for text questions — used by AI grader
-    pairs: Optional[List[Any]] = None    # for matching questions [{term, answer}]
+    model_answer: Optional[str] = None
+    pairs: Optional[List[Any]] = None
     marks: int = 1
     order_num: int = 0
 
@@ -136,6 +138,8 @@ async def create_question(payload: QuestionCreate, admin: dict = Depends(require
     data = {
         "question": payload.question,
         "type": payload.type,
+        "subject": payload.subject or "general",
+        "image_url": payload.image_url,  # <--- Added this
         "marks": marks,
         "order_num": payload.order_num,
         "options": payload.options,
@@ -155,6 +159,8 @@ async def update_question(question_id: str, payload: QuestionCreate, admin: dict
     data = {
         "question": payload.question,
         "type": payload.type,
+        "subject": payload.subject or "general",
+        "image_url": payload.image_url,  # <--- Added this
         "marks": marks,
         "order_num": payload.order_num,
         "options": payload.options,
@@ -176,11 +182,62 @@ async def delete_question(question_id: str, admin: dict = Depends(require_admin)
 class StartExamPayload(BaseModel):
     exam_code: str
 
+
+def _select_questions_for_subject(all_questions: list, subjects: list, target_marks: int = 100) -> list:
+    """
+    Select questions from the library that:
+    1. Match the tutor's subjects (prefer subject-specific, fallback to 'general')
+    2. Total exactly `target_marks` marks (greedy bin-packing, best-effort)
+    3. Are shuffled so each exam feels different
+    """
+    import random
+
+    subject_lower = [s.strip().lower() for s in (subjects or [])]
+
+    # Split into subject-matched, general, and other
+    matched, general, other = [], [], []
+    for q in all_questions:
+        q_subj = (q.get("subject") or "general").strip().lower()
+        if q_subj in subject_lower:
+            matched.append(q)
+        elif q_subj == "general":
+            general.append(q)
+        else:
+            other.append(q)
+
+    # Shuffle each pool independently for variety
+    random.shuffle(matched)
+    random.shuffle(general)
+    random.shuffle(other)
+
+    # Priority pool: matched first, then general, then other as fallback
+    pool = matched + general + other
+
+    if not pool:
+        return []
+
+    # Greedy selection: fill up to target_marks
+    selected = []
+    total = 0
+    for q in pool:
+        q_marks = q.get("marks", 1)
+        if total + q_marks <= target_marks:
+            selected.append(q)
+            total += q_marks
+        if total == target_marks:
+            break
+
+    # If we still haven't hit target (not enough questions), return what we have
+    # Sort by order_num for consistent display
+    selected.sort(key=lambda q: q.get("order_num", 0))
+    return selected
+
+
 @router.post("/start")
 async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
 
-    tutor = sb.table("tutors").select("id, status, exam_code").eq("profile_id", current_user["id"]).single().execute().data
+    tutor = sb.table("tutors").select("id, status, exam_code, subjects").eq("profile_id", current_user["id"]).single().execute().data
     if not tutor:
         raise HTTPException(403, "Tutor profile not found")
     if tutor["status"] != "written_exam":
@@ -188,13 +245,13 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
     if not tutor.get("exam_code"):
         raise HTTPException(403, "No exam code has been set for you. Please contact admin.")
     if payload.exam_code.strip().upper() != tutor["exam_code"].strip().upper():
-        raise HTTPException(403, "Invalid exam code. Please check with admin.")
+        raise HTTPException(403, "Invalid exam code. Please check your email for the correct code.")
 
     settings_row = sb.table("exam_settings").select("default_time_minutes", "instructions").eq("id", 1).single().execute().data
     exam_minutes = settings_row["default_time_minutes"] if settings_row else 60
     instructions = settings_row["instructions"] if settings_row else "Please read carefully before starting"
 
-    existing = sb.table("exam_attempts").select("id, status, started_at, time_limit_minutes, answers").eq("tutor_id", tutor["id"]).execute().data
+    existing = sb.table("exam_attempts").select("id, status, started_at, time_limit_minutes, answers, question_ids").eq("tutor_id", tutor["id"]).execute().data
     if existing:
         attempt = existing[0]
         if attempt["status"] == "in_progress":
@@ -203,10 +260,17 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
             if datetime.now(timezone.utc) > started + limit:
                 sb.table("exam_attempts").update({"status": "expired"}).eq("id", attempt["id"]).execute()
             else:
-                # Return questions without model_answer or correct_answer (security)
-                questions = sb.table("exam_questions").select(
-                    "id, question, type, options, marks, order_num, pairs"
-                ).eq("is_active", True).order("order_num").execute().data or []
+                # Resume: return the same questions that were assigned (by stored question_ids)
+                stored_ids = attempt.get("question_ids") or []
+                if stored_ids:
+                    questions = sb.table("exam_questions").select(
+                        "id, question, type, options, marks, order_num, pairs, subject"
+                    ).in_("id", stored_ids).order("order_num").execute().data or []
+                else:
+                    # Legacy fallback — no stored ids
+                    questions = sb.table("exam_questions").select(
+                        "id, question, type, options, marks, order_num, pairs, subject"
+                    ).eq("is_active", True).order("order_num").execute().data or []
                 elapsed = int((datetime.now(timezone.utc) - started).total_seconds())
                 remaining = max(0, attempt["time_limit_minutes"] * 60 - elapsed)
                 return {
@@ -221,19 +285,32 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
         else:
             raise HTTPException(403, "You have already attempted the exam and cannot retake it.")
 
-    # Fetch questions — never expose model_answer or correct_answer to tutor
-    questions = sb.table("exam_questions").select(
-        "id, question, type, options, marks, order_num, pairs"
-    ).eq("is_active", True).order("order_num").execute().data or []
-    if not questions:
+    # Fetch full question library (admin fields stripped for security)
+    all_questions = sb.table("exam_questions").select(
+        "id, question, type, options, marks, order_num, pairs, subject"
+    ).eq("is_active", True).execute().data or []
+
+    if not all_questions:
         raise HTTPException(400, "No exam questions available. Please contact admin.")
+
+    # Select 100-mark subject-specific question set
+    tutor_subjects = tutor.get("subjects") or []
+    questions = _select_questions_for_subject(all_questions, tutor_subjects, target_marks=100)
+
+    if not questions:
+        raise HTTPException(400, "No questions available for your subjects. Please contact admin.")
+
+    total_marks = sum(q.get("marks", 1) for q in questions)
+    question_ids = [q["id"] for q in questions]
 
     attempt = sb.table("exam_attempts").insert({
         "tutor_id": tutor["id"],
         "profile_id": current_user["id"],
         "time_limit_minutes": exam_minutes,
         "status": "in_progress",
-        "answers": {}
+        "answers": {},
+        "question_ids": question_ids,   # Store which questions this tutor got
+        "total_marks": total_marks,
     }).execute().data[0]
 
     return {
@@ -241,6 +318,7 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
         "time_limit_minutes": exam_minutes,
         "time_remaining_seconds": exam_minutes * 60,
         "questions": questions,
+        "total_marks": total_marks,
         "answers": {},
         "resumed": False,
         "instructions": instructions
@@ -301,8 +379,13 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
     if not attempt or attempt["status"] != "in_progress":
         raise HTTPException(400, "Invalid attempt")
 
-    # Fetch full questions including model_answer and pairs for grading
-    questions = sb.table("exam_questions").select("*").eq("is_active", True).execute().data or []
+    # Fetch only the questions assigned to THIS attempt (by stored question_ids)
+    stored_ids = attempt.get("question_ids") or []
+    if stored_ids:
+        questions = sb.table("exam_questions").select("*").in_("id", stored_ids).execute().data or []
+    else:
+        # Legacy fallback
+        questions = sb.table("exam_questions").select("*").eq("is_active", True).execute().data or []
     answers = attempt["answers"] or {}
 
     total_marks = 0
@@ -426,7 +509,10 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
         })
     if answer_records:
         # Upsert to avoid duplicates on re-grade
-        sb.table("exam_answers").upsert(answer_records, on_conflict="attempt_id,question_id").execute()
+        try:
+            sb.table("exam_answers").upsert(answer_records, on_conflict="attempt_id,question_id").execute()
+        except Exception as e:
+            print(f"Error saving exam_answers: {e}")
 
     sb.table("exam_attempts").update({
         "submitted_at": datetime.now(timezone.utc).isoformat(),
@@ -438,7 +524,12 @@ async def submit_exam(payload: SubmitPayload, current_user: dict = Depends(get_c
         "earned_marks": auto_earned,
     }).eq("id", payload.attempt_id).execute()
 
-    sb.table("tutors").update({"written_exam_score": score_pct}).eq("id", attempt["tutors"]["id"]).execute()
+    # Safely get tutor_id
+    tutor_obj = attempt.get("tutors")
+    tutor_id = tutor_obj.get("id") if isinstance(tutor_obj, dict) else (tutor_obj[0].get("id") if isinstance(tutor_obj, list) else None)
+    
+    if tutor_id:
+        sb.table("tutors").update({"written_exam_score": score_pct}).eq("id", tutor_id).execute()
 
     return {
         "score": score_pct,

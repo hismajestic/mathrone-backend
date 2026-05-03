@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
 from app.schemas.schemas import (
-    TutorUpdate, TutorStatusUpdate,
+    TutorUpdate, TutorStatusUpdate, TutorAvailabilityUpdate,
     PaginatedResponse, MessageResponse,
 )
 from app.core.security import get_current_user, require_admin, require_tutor
@@ -136,6 +136,110 @@ async def upload_certificate(
     return MessageResponse(message="Certificate uploaded successfully")
 
 
+@router.get("/me/availability")
+async def get_my_availability(current_user: dict = Depends(require_tutor)):
+    """Tutor views their available time slots."""
+    from app.schemas.schemas import AvailabilitySlot
+    sb = get_supabase_admin()
+    try:
+        tutor = sb.table("tutors").select("availability, is_available").eq(
+            "profile_id", current_user["id"]
+        ).single().execute().data
+    except Exception:
+        raise HTTPException(404, "Tutor profile not found")
+    
+    availability = tutor.get("availability") or {}
+    slots = [
+        AvailabilitySlot(day=slot["day"], start=slot["start"], end=slot["end"])
+        for slot in availability.get("slots", [])
+    ]
+    return {
+        "is_available": tutor.get("is_available", True),
+        "slots": slots,
+        "last_updated": availability.get("last_updated")
+    }
+
+
+@router.patch("/me/availability", response_model=MessageResponse)
+async def update_my_availability(
+    payload: TutorAvailabilityUpdate,
+    current_user: dict = Depends(require_tutor),
+):
+    """Tutor sets their available time slots (e.g., Mon 3-5 PM, Tue 7-9 PM)."""
+    from datetime import datetime
+    
+    sb = get_supabase_admin()
+    
+    slots = [s.model_dump() for s in payload.availability]
+    
+    availability_data = {
+        "slots": slots,
+        "last_updated": datetime.utcnow().isoformat()
+    }
+    
+    sb.table("tutors").update({
+        "availability": availability_data,
+        "is_available": True if slots else False,
+    }).eq("profile_id", current_user["id"]).execute()
+    
+    return MessageResponse(message=f"Availability updated with {len(slots)} time slots")
+
+
+@router.post("/me/agreement", response_model=MessageResponse)
+async def sign_agreement(
+    current_user: dict = Depends(require_tutor),
+):
+    """Tutor signs the terms of service and agreement."""
+    from datetime import datetime
+    sb = get_supabase_admin()
+    
+    # Check if tutor is approved (must be approved to sign agreement)
+    tutor = sb.table("tutors").select("status").eq(
+        "profile_id", current_user["id"]
+    ).single().execute().data
+    
+    if tutor["status"] not in ("approved", "under_review", "written_exam", "interview"):
+        raise HTTPException(
+            403,
+            "You must be approved as a tutor before signing the agreement"
+        )
+    
+    # Update tutor record with agreement acceptance
+    sb.table("tutors").update({
+        "agreement_accepted": True,
+        "agreement_accepted_at": datetime.utcnow().isoformat(),
+    }).eq("profile_id", current_user["id"]).execute()
+    
+    # Send notification
+    try:
+        await NotificationService.create(
+            current_user["id"], "general",
+            "Agreement Signed ✓",
+            "Thank you! You have signed the Mathrone Academy tutor agreement.",
+            sb,
+        )
+    except Exception:
+        pass
+    
+    return MessageResponse(message="Agreement signed successfully")
+
+
+@router.get("/me/agreement-status")
+async def get_agreement_status(current_user: dict = Depends(require_tutor)):
+    """Check if tutor has signed the agreement."""
+    sb = get_supabase_admin()
+    try:
+        tutor = sb.table("tutors").select("agreement_accepted, agreement_accepted_at").eq(
+            "profile_id", current_user["id"]
+        ).single().execute().data
+    except Exception:
+        raise HTTPException(404, "Tutor profile not found")
+    
+    return {
+        "agreed": tutor.get("agreement_accepted", False),
+        "agreed_at": tutor.get("agreement_accepted_at")
+    }
+
 
 # ── Admin routes — MUST come before /{tutor_id} to avoid route shadowing ──────
 
@@ -204,9 +308,11 @@ async def update_tutor_status(
 
     sb.table("tutors").update(update_data).eq("id", tutor_id).execute()
 
-    # Send recruitment email
+    # Send recruitment email — pass exam_code so it appears in the written_exam email
     score = payload.written_exam_score or payload.interview_score
-    await send_recruitment_email(email, name, payload.status, score, payload.rejection_reason)
+    exam_code = payload.exam_code.upper() if payload.exam_code else tutor.get("exam_code")
+    exam_minutes = payload.exam_time_minutes or tutor.get("exam_time_minutes") or 60
+    await send_recruitment_email(email, name, payload.status, score, payload.rejection_reason, exam_code=exam_code, exam_minutes=exam_minutes)
 
     # Send in-app notification
     try:

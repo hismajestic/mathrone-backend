@@ -24,6 +24,7 @@ class TokenCreate(BaseModel):
     hours: int = 24
     institution_id: Optional[str] = None  # None = individual guest
     session_id: Optional[str] = None      # Tutor's active lab session ID for real-time sync
+    assignment_id: Optional[str] = None   # Assignment ID (for tutor-student pair validation)
 
 class ValidatePayload(BaseModel):
     device_fingerprint: str
@@ -80,7 +81,42 @@ async def list_tokens(admin: dict = Depends(require_admin)):
 async def create_token(payload: TokenCreate, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ("admin", "tutor"):
         raise HTTPException(403, "Only tutors and admins can generate lab links")
+    
     sb = get_supabase_admin()
+    
+    # ─── IMPORTANT: Tutors must have at least one active assignment ─────────────
+    if current_user.get("role") == "tutor":
+        tutor = sb.table("tutors").select("id").eq(
+            "profile_id", current_user["id"]
+        ).single().execute().data
+        
+        if not tutor:
+            raise HTTPException(404, "Tutor profile not found")
+        
+        # Check if tutor has active assignments
+        active_assignments = sb.table("assignments").select("id").eq(
+            "tutor_id", tutor["id"]
+        ).eq("is_active", True).execute().data or []
+        
+        if not active_assignments:
+            raise HTTPException(
+                403,
+                "You must be assigned to at least one student before accessing the lab. "
+                "Contact an admin to get assigned to a student."
+            )
+        
+        # If assignment_id is provided, verify it belongs to this tutor
+        if payload.assignment_id:
+            assignment = sb.table("assignments").select("tutor_id").eq(
+                "id", payload.assignment_id
+            ).single().execute().data
+            
+            if not assignment or assignment["tutor_id"] != tutor["id"]:
+                raise HTTPException(
+                    403,
+                    "This assignment does not belong to you"
+                )
+    
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=payload.hours)).isoformat()
     data = {
         "buyer_name":      payload.buyer_name,
@@ -88,6 +124,7 @@ async def create_token(payload: TokenCreate, current_user: dict = Depends(get_cu
         "expires_at":      expires_at,
         "institution_id":  payload.institution_id,
         "session_id":      payload.session_id,
+        "assignment_id":   payload.assignment_id,  # Link token to assignment
         "created_by":      current_user["id"],
     }
     result = sb.table("lab_tokens").insert(data).execute().data

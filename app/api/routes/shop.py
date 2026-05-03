@@ -154,6 +154,13 @@ class PlaceOrder(BaseModel):
 @router.post("/orders")
 async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
+    
+    # Check for duplicate MoMo reference
+    if payload.momo_reference:
+        existing = sb.table("orders").select("id").eq("momo_reference", payload.momo_reference).execute()
+        if existing.data:
+            raise HTTPException(400, "This MoMo reference number has already been used.")
+
     order = sb.table("orders").insert({
         "user_id":          current_user["id"],
         "total_amount":     payload.total_amount,
@@ -229,6 +236,24 @@ async def update_order_status(order_id: str, payload: dict, admin: dict = Depend
     except Exception:
         pass
     return {"message": "Order status updated"}
+
+@router.get("/products/admin/all")
+async def get_all_products_admin(admin: dict = Depends(require_admin)):
+    """Get all products (including inactive) for admin management"""
+    sb = get_supabase_admin()
+    products = sb.table("products").select("*").order("created_at", desc=True).execute().data or []
+    return products
+
+@router.patch("/products/admin/{product_id}/toggle-active")
+async def toggle_product_active(product_id: str, admin: dict = Depends(require_admin)):
+    """Toggle product active status"""
+    sb = get_supabase_admin()
+    product = sb.table("products").select("is_active").eq("id", product_id).execute().data
+    if not product:
+        raise HTTPException(404, "Product not found")
+    new_status = not product[0]["is_active"]
+    sb.table("products").update({"is_active": new_status}).eq("id", product_id).execute()
+    return {"is_active": new_status, "message": f"Product {'activated' if new_status else 'deactivated'}"}
 
 # ─── PRODUCTS ADMIN ───────────────────────────────────
 

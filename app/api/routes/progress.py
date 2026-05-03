@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 from app.core.security import get_current_user, require_admin, require_tutor
 from app.db.supabase import get_supabase_admin
 from app.services.notification_service import NotificationService
@@ -111,17 +112,17 @@ async def generate_report_link(
 
     if existing:
         # Refresh expiry
-        from datetime import datetime, timedelta
+       
         result = sb.table("report_links").update({
-            "expires_at": (datetime.utcnow() + timedelta(days=30)).isoformat()
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
         }).eq("student_id", payload.student_id).execute()
         token = existing[0]["token"]
     else:
-        from datetime import datetime, timedelta
+        
         result = sb.table("report_links").insert({
             "student_id": payload.student_id,
             "created_by": current_user["id"],
-            "expires_at": (datetime.utcnow() + timedelta(days=30)).isoformat()
+            "expires_at": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
         }).execute()
         token = result.data[0]["token"]
 

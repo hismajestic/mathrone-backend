@@ -35,7 +35,7 @@ async def create_post(payload: PostCreate, current_user: dict = Depends(get_curr
         "title":     payload.title,
         "content":   payload.content,
         "category":  payload.category,
-        "status":    "approved",
+        "status":    "pending",
     }).execute()
 
     # Notify admins

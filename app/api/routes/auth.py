@@ -53,7 +53,7 @@ def _create_user_via_supabase(email: str, password: str, full_name: str, role: s
             raise HTTPException(400, "Email already registered.")
         raise HTTPException(400, e.message)
         
-async def send_recruitment_email(email: str, name: str, status: str, score: int = None, reason: str = None):
+async def send_recruitment_email(email: str, name: str, status: str, score: int = None, reason: str = None, exam_code: str = None, exam_minutes: int = 60):
     from app.services.email_service import EmailService
     # Score-based messaging
     score_msg = ""
@@ -92,10 +92,24 @@ async def send_recruitment_email(email: str, name: str, status: str, score: int 
             )
         ),
         "written_exam": (
-            "You are invited to take a written exam — Mathrone Academy",
+            "Your exam access code — Mathrone Academy",
             EmailService.template(
-                f"Congratulations {name}! You passed the review stage 🎉",
-                f"You have been invited to complete a written examination as part of our tutor vetting process.<br><br>Please log in to your Mathrone Academy account to access your exam. The exam is timed — <strong>60 minutes</strong> — and must be completed in one sitting.<br><br><strong>Important rules:</strong><br>• Do not switch tabs during the exam<br>• Stay in fullscreen mode<br>• Do not copy or paste answers<br>• Submit before the timer runs out",
+                f"Congratulations {name}! Your exam is ready 🎉",
+                f"You have been invited to complete a written examination as part of our tutor vetting process.<br><br>"
+                f"<div style=\"background:#1e1b4b;border-radius:12px;padding:20px;text-align:center;margin:20px 0\">"
+                f"<div style=\"font-size:13px;color:rgba(255,255,255,0.7);margin-bottom:8px\">YOUR EXAM ACCESS CODE</div>"
+                f"<div style=\"font-size:36px;font-weight:900;color:#F5A623;letter-spacing:8px;font-family:monospace\">{exam_code or 'See Dashboard'}</div>"
+                f"<div style=\"font-size:12px;color:rgba(255,255,255,0.5);margin-top:8px\">Enter this code on the exam page to begin</div>"
+                f"</div>"
+                f"<strong>Exam details:</strong><br>"
+                f"• Time limit: <strong>{exam_minutes} minutes</strong><br>"
+                f"• Must be completed in one sitting<br><br>"
+                f"<strong>Important rules:</strong><br>"
+                f"• Do not switch tabs during the exam<br>"
+                f"• Stay in fullscreen mode<br>"
+                f"• Do not copy or paste answers<br>"
+                f"• Submit before the timer runs out<br><br>"
+                f"⚠️ Keep this code private — it is unique to you.",
                 "https://mathroneacademy.com/login",
                 "Take My Exam Now →"
             )
@@ -634,7 +648,7 @@ async def set_recruiting_status(
         "key": "is_recruiting",
         "value": "true" if payload.get("is_recruiting") else "false",
         "updated_at": "now()"
-    }).execute()
+    }, on_conflict="key").execute()  # <--- Added on_conflict
     return { "message": "Recruiting status updated" }
 
 @router.get("/settings/quiz")
@@ -653,5 +667,5 @@ async def set_quiz_status(
         "key": "quiz_enabled",
         "value": "true" if payload.get("quiz_enabled") else "false",
         "updated_at": "now()"
-    }).execute()
+    }, on_conflict="key").execute()  # <--- Added on_conflict
     return { "message": "Quiz status updated" }

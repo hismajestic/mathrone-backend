@@ -801,6 +801,13 @@ ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS salary_frequency     TEXT DEF
 ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS payment_method       TEXT;
 ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS payment_details      TEXT;
 ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS category             TEXT DEFAULT 'academic';
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS agreement_accepted   BOOLEAN DEFAULT FALSE;
+ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS agreement_accepted_at TIMESTAMPTZ;
+
+-- ============================================================
+-- LAB_TOKENS: Link tokens to assignments for tutor access control
+-- ============================================================
+ALTER TABLE public.lab_tokens ADD COLUMN IF NOT EXISTS assignment_id UUID REFERENCES public.assignments(id) ON DELETE SET NULL;
 
 -- ============================================================
 -- EXAM: Questions and Attempts

@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
-from typing import Optional
+from typing import Optional, List
+from pydantic import BaseModel
+from datetime import datetime, timedelta
 from app.schemas.schemas import (
-    SessionCreate, SessionUpdate, SessionReview,
+    SessionCreate, SessionUpdate, SessionReview, StudentSessionBooking,
     StudentUpdate, AssignmentCreate, TutoringRequestCreate,
     TutoringRequestAssign, MessageCreate, InvoiceCreate, MessageResponse,
 )
@@ -119,7 +121,7 @@ async def get_my_assignments(current_user: dict = Depends(get_current_user)):
     except Exception:
         return []
     return sb.table("assignments").select(
-        "*, tutors(id, subjects, hourly_rate, profiles!tutors_profile_id_fkey(full_name, avatar_url))"
+        "*, tutors!inner(id, subjects, hourly_rate, agreement_accepted, profiles:profile_id(id, full_name, avatar_url, phone))"
     ).eq("student_id", student["id"]).eq("is_active", True).execute().data
 
 
@@ -168,6 +170,7 @@ async def assign_tutor(payload: AssignmentCreate, admin = Depends(require_admin)
             "mode":        payload.mode.value,
             "notes":       payload.notes,
             "assigned_by": admin["id"],
+            "is_active":   payload.is_active  # Use the flag from the admin modal
         }).execute()
 
     # Notify both parties
@@ -234,10 +237,11 @@ async def list_all_sessions(
     status: Optional[str] = Query(None),
     admin  = Depends(require_admin),
 ):
-    """Admin: list all sessions with student and tutor names."""
+    """Admin: list all sessions with student and tutor profiles."""
     sb = get_supabase_admin()
+    # We use a broad select to ensure profiles for both roles are returned
     q  = sb.table("sessions").select(
-        "*, students(profiles!students_profile_id_fkey(full_name)), tutors(profiles!tutors_profile_id_fkey(full_name))"
+        "*, students(*, profiles!students_profile_id_fkey(full_name)), tutors(*, profiles!tutors_profile_id_fkey(full_name))"
     )
     if status:
         q = q.eq("status", status)
@@ -389,6 +393,234 @@ async def update_session(
     return MessageResponse(message="Session updated")
 
 
+@sessions_router.post("/{session_id}/webhook")
+async def session_webhook(
+    session_id: str,
+    payload: dict,  # {event: 'started'|'ended', timestamp: ISO string}
+):
+    """
+    Webhook endpoint for Jitsi or other meeting platforms to notify of session start/end.
+    Automatically captures actual_start and actual_end times.
+    """
+    sb = get_supabase_admin()
+    from datetime import datetime
+    
+    try:
+        session = sb.table("sessions").select("*").eq("id", session_id).single().execute().data
+    except Exception:
+        raise HTTPException(404, "Session not found")
+    
+    event = payload.get("event")  # 'started' or 'ended'
+    timestamp = payload.get("timestamp") or datetime.utcnow().isoformat()
+    
+    update_data = {}
+    
+    if event == "started":
+        # Session has started - capture actual_start
+        update_data["actual_start"] = timestamp
+        update_data["status"] = "in_progress"
+        
+        # Notify participants
+        try:
+            student = sb.table("students").select("profile_id").eq("id", session["student_id"]).single().execute().data
+            tutor = sb.table("tutors").select("profile_id").eq("id", session["tutor_id"]).single().execute().data
+            
+            await NotificationService.create(
+                student["profile_id"], "session_reminder",
+                "Session Started 🎓",
+                f"Your {session['subject']} session has started. Join the meeting now!",
+                sb,
+            )
+            await NotificationService.create(
+                tutor["profile_id"], "session_reminder",
+                "Session Started 🎓",
+                f"Your session with student has started.",
+                sb,
+            )
+        except Exception:
+            pass
+    
+    elif event == "ended":
+        # Session has ended - capture actual_end
+        update_data["actual_end"] = timestamp
+        update_data["status"] = "completed"
+        
+        # Notify admin and participants
+        try:
+            student = sb.table("students").select("profile_id").eq("id", session["student_id"]).single().execute().data
+            tutor = sb.table("tutors").select("profile_id").eq("id", session["tutor_id"]).single().execute().data
+            
+            # Notify admin
+            admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
+            tutor_name = sb.table("profiles").select("full_name").eq("id", tutor["profile_id"]).single().execute().data["full_name"]
+            student_name = sb.table("profiles").select("full_name").eq("id", student["profile_id"]).single().execute().data["full_name"]
+            
+            for admin in admins:
+                await NotificationService.create(
+                    admin["id"], "general",
+                    "Session Completed ✓",
+                    f"{tutor_name}'s session with {student_name} ({session['subject']}) has ended.",
+                    sb,
+                )
+            
+            # Notify participants
+            await NotificationService.create(
+                student["profile_id"], "general",
+                "Session Ended 📝",
+                f"Your {session['subject']} session has ended. Please rate your tutor!",
+                sb,
+            )
+        except Exception as e:
+            print(f"Notification error: {e}")
+    
+    if update_data:
+        sb.table("sessions").update(update_data).eq("id", session_id).execute()
+    
+    return {"message": f"Session {event} recorded", "session_id": session_id}
+
+
+@sessions_router.post("/my/book", status_code=201)
+async def book_session_student(
+    payload: StudentSessionBooking,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Student books a tutor from available time slots.
+    Student can only book from their assigned tutors.
+    """
+    sb = get_supabase_admin()
+    
+    # Get student ID
+    try:
+        student = sb.table("students").select("id").eq(
+            "profile_id", current_user["id"]
+        ).single().execute().data
+    except Exception:
+        raise HTTPException(404, "Student profile not found")
+    
+    # Get the assignment
+    try:
+        assignment = sb.table("assignments").select("*, tutors(id, availability)").eq(
+            "id", payload.assignment_id
+        ).eq("is_active", True).single().execute().data
+    except Exception:
+        raise HTTPException(404, "Assignment not found or inactive")
+    
+    if assignment["student_id"] != student["id"]:
+        raise HTTPException(403, "You can only book sessions with your assigned tutors")
+    
+    tutor_id = assignment["tutor_id"]
+    
+    # Check tutor availability
+    tutor_availability = assignment["tutors"]["availability"] or {}
+    slots = tutor_availability.get("slots", [])
+    
+    if not slots:
+        raise HTTPException(400, "This tutor has not set their availability yet")
+    
+    # Check if the requested time matches a tutor availability slot
+    scheduled_at = payload.scheduled_at
+    slot_day = scheduled_at.strftime("%A")  # 'Monday', 'Tuesday', etc.
+    slot_start = scheduled_at.strftime("%H:%M")  # '14:00'
+    slot_end = (scheduled_at + timedelta(minutes=payload.duration_mins)).strftime("%H:%M")
+    
+    matching_slot = None
+    for slot in slots:
+        if slot["day"] == slot_day:
+            if slot["start"] <= slot_start and slot_end <= slot["end"]:
+                matching_slot = slot
+                break
+    
+    if not matching_slot:
+        slot_times = ', '.join([f"{s['day']} {s['start']}-{s['end']}" for s in slots])
+        raise HTTPException(
+            400,
+            f"Requested time ({slot_day} {slot_start}-{slot_end}) doesn't match tutor's availability. "
+            f"Available: {slot_times}"
+        )
+    
+    # Calculate session end time
+    session_start = payload.scheduled_at
+    session_end = session_start + timedelta(minutes=payload.duration_mins)
+    
+    # Check for tutor conflicts (already existing sessions)
+    tutor_sessions = sb.table("sessions").select(
+        "id, scheduled_at, duration_mins"
+    ).eq("tutor_id", tutor_id).in_(
+        "status", ["scheduled", "pending", "in_progress"]
+    ).execute().data or []
+    
+    for s in tutor_sessions:
+        existing_start = datetime.fromisoformat(s["scheduled_at"].replace("Z", "+00:00"))
+        existing_end = existing_start + timedelta(minutes=s["duration_mins"])
+        if session_start < existing_end and session_end > existing_start:
+            raise HTTPException(409, "This tutor is already booked for this time slot")
+    
+    # Check for student conflicts
+    student_sessions = sb.table("sessions").select(
+        "id, scheduled_at, duration_mins"
+    ).eq("student_id", student["id"]).in_(
+        "status", ["scheduled", "pending", "in_progress"]
+    ).execute().data or []
+    
+    for s in student_sessions:
+        existing_start = datetime.fromisoformat(s["scheduled_at"].replace("Z", "+00:00"))
+        existing_end = existing_start + timedelta(minutes=s["duration_mins"])
+        if session_start < existing_end and session_end > existing_start:
+            raise HTTPException(409, "You already have a session at this time")
+    
+    # Auto-generate Jitsi link for online sessions
+    meeting_link = None
+    platform = None
+    if payload.mode.value in ["online", "blended"]:
+        import uuid
+        room_name = f"Mathrone-{uuid.uuid4().hex[:10]}"
+        meeting_link = f"https://meet.jit.si/{room_name}"
+        platform = "jitsi"
+    
+    # Create the session
+    result = sb.table("sessions").insert({
+        "student_id": student["id"],
+        "tutor_id": tutor_id,
+        "assignment_id": payload.assignment_id,
+        "subject": assignment["subject"],
+        "mode": payload.mode.value,
+        "scheduled_at": payload.scheduled_at.isoformat(),
+        "duration_mins": payload.duration_mins,
+        "meeting_link": meeting_link,
+        "platform": platform,
+        "location": payload.location,
+        "notes": payload.notes,
+        "status": "scheduled",
+    }).execute()
+    
+    session = result.data[0]
+    time_str = payload.scheduled_at.strftime("%b %d at %I:%M %p")
+    
+    try:
+        tutor_profile = sb.table("tutors").select("profile_id").eq("id", tutor_id).single().execute().data
+        
+        # Notify both parties
+        await NotificationService.create(
+            current_user["id"], "session_reminder",
+            "Session Booked ✓",
+            f"You have booked a session for {time_str}." + (f" Join: {meeting_link}" if meeting_link else ""),
+            sb,
+        )
+        await NotificationService.create(
+            tutor_profile["profile_id"], "general",
+            "New Session Booking 📅",
+            f"Student has booked a {assignment['subject']} session for {time_str}.",
+            sb,
+        )
+    except Exception:
+        pass
+    
+    return session
+
+
+# ── Student booking endpoint with conflict checking ──────────────────────────────
+
 @sessions_router.post("/{session_id}/review", response_model=MessageResponse)
 async def review_session(
     session_id:   str,
@@ -532,51 +764,47 @@ async def send_message(
     sb      = get_supabase_admin()
     uid     = current_user["id"]
     
-    # Students can only message their assigned tutors
-    if current_user["role"] == "student":
-        sb = get_supabase_admin()
-        try:
-            student = sb.table("students").select("id").eq(
-                "profile_id", uid
-            ).single().execute().data
-            assignment = sb.table("assignments").select("id").eq(
-                "student_id", student["id"]
-            ).eq("is_active", True).execute().data
-            assigned_tutor_ids = [
-                sb.table("tutors").select("profile_id").eq(
-                    "id", a["tutor_id"]
-                ).single().execute().data["profile_id"]
-                for a in assignment
-            ]
-            if payload.recipient_id not in assigned_tutor_ids:
-                raise HTTPException(403, "You can only message your assigned tutors.")
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(403, "You can only message your assigned tutors.")
+    # Ensure communication is only allowed between assigned pairs
+    if current_user["role"] != "admin":
+        is_assigned = False
+        if current_user["role"] == "student":
+            # Check: Does this student have an active assignment with this tutor?
+            res = sb.table("assignments").select("id").eq("student_id", sb.table("students").select("id").eq("profile_id", uid).single().execute().data["id"]).eq("tutor_id", sb.table("tutors").select("id").eq("profile_id", payload.recipient_id).single().execute().data["id"]).eq("is_active", True).execute()
+            if res.data: is_assigned = True
+        else:
+            # Check: Does this tutor have an active assignment with this student?
+            res = sb.table("assignments").select("id").eq("tutor_id", sb.table("tutors").select("id").eq("profile_id", uid).single().execute().data["id"]).eq("student_id", sb.table("students").select("id").eq("profile_id", payload.recipient_id).single().execute().data["id"]).eq("is_active", True).execute()
+            if res.data: is_assigned = True
+        
+        if not is_assigned:
+            raise HTTPException(403, "Access denied. You can only message users you are assigned to.")
+
     conv_id = _get_or_create_conversation(sb, uid, payload.recipient_id)
+
+    # LEAKAGE PROTECTION: Flag numbers or external payment requests
+    leak_flag = False
+    content_lower = payload.content.lower()
+    patterns = ["+250", "078", "079", "072", "073", "whatsapp", "pay me", "private", "number is", "contact me"]
+    if any(p in content_lower for p in patterns):
+        leak_flag = True
 
     msg = sb.table("messages").insert({
         "conversation_id": conv_id,
         "sender_id":       uid,
         "content":         payload.content,
         "attachment_url":  payload.attachment_url,
+        "flagged":         leak_flag
     }).execute().data[0]
 
-    # Update conversation preview
-    sb.table("conversations").update({
-        "last_message":    payload.content[:80],
-        "last_message_at": "now()",
-    }).eq("id", conv_id).execute()
+    sb.table("conversations").update({"last_message": payload.content[:80], "last_message_at": "now()"}).eq("id", conv_id).execute()
 
-    # Notify recipient
-    await NotificationService.create(
-        payload.recipient_id, "new_message",
-        f"New message from {current_user['full_name']}",
-        payload.content[:100],
-        sb,
-    )
+    # Alert admin of leakage in real-time
+    if leak_flag:
+        admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
+        for admin in admins:
+            await NotificationService.create(admin["id"], "general", "⚠️ Leakage Alert", f"{current_user['full_name']} sent contact/payment info.", sb)
 
+    await NotificationService.create(payload.recipient_id, "new_message", f"New message from {current_user['full_name']}", payload.content[:100], sb)
     return msg
 
 
@@ -719,32 +947,36 @@ async def mark_invoice_paid(
 ):
     sb = get_supabase_admin()
 
-    # Get invoice details
+    # 1. Get detailed invoice and student info
     invoice = sb.table("invoices").select(
-        "*, students(profile_id, profiles!students_profile_id_fkey(full_name))"
+        "*, students(id, profile_id, profiles!students_profile_id_fkey(full_name))"
     ).eq("id", invoice_id).single().execute().data
 
     if not invoice:
         raise HTTPException(404, "Invoice not found")
 
-    # Mark as paid
+    # 2. Update Invoice Status
     sb.table("invoices").update({
         "status":  "paid",
         "paid_at": "now()"
     }).eq("id", invoice_id).execute()
 
-    # Notify student
+    # 3. THE BRIDGE: Automatically activate any inactive deals for this student
+    # This assumes the invoice was for their tutoring package.
+    sb.table("assignments").update({"is_active": True}).eq("student_id", invoice["student_id"]).execute()
+
+    # 4. Notify student and trigger "Book Now" availability
     try:
         await NotificationService.create(
             invoice["students"]["profile_id"], "general",
-            "Payment Confirmed ✅",
-            f"Your payment of ${invoice['amount']} has been confirmed. Thank you!",
+            "👑 Deal Activated!",
+            f"Payment confirmed. Your tutoring sessions are now active! You can now book your first session.",
             sb,
         )
     except Exception:
         pass
 
-    return {"message": "Invoice marked as paid"}
+    return {"message": "Invoice paid and tutoring deal activated! ✅"}
 @notifications_router.delete("/{notification_id}")
 async def delete_notification(
     notification_id: str,
@@ -775,3 +1007,74 @@ async def delete_student(
     sb.table("students").delete().eq("id", student_id).execute()
     sb.auth.admin.delete_user(student["profile_id"])
     return {"message": "Student deleted successfully"}
+
+class BookingRequest(BaseModel):
+    tutor_id: str
+    subject: str
+    scheduled_at: datetime
+
+@sessions_router.post("/book")
+async def book_session(payload: BookingRequest, current_user: dict = Depends(get_current_user)):
+    sb = get_supabase_admin()
+    
+    # 1. Fetch Student ID
+    student_res = sb.table("students").select("id").eq("profile_id", current_user["id"]).single().execute()
+    if not student_res.data: raise HTTPException(404, "Student profile not found")
+    student_id = student_res.data["id"]
+
+    # 2. STRICT ASSIGNMENT CHECK: Has Admin authorized this student to work with THIS specific tutor?
+    assignment_check = sb.table("assignments").select("id, is_active").eq("student_id", student_id).eq("tutor_id", payload.tutor_id).eq("is_active", True).execute()
+    
+    if not assignment_check.data:
+        raise HTTPException(403, "You cannot book this tutor. Please click 'Request this Tutor' first and wait for Admin assignment.")
+
+    # 3. CONTRACT CHECK: Is the tutor ready?
+    tutor_check = sb.table("tutors").select("agreement_accepted").eq("id", payload.tutor_id).single().execute()
+    if not tutor_check.data or not tutor_check.data.get("agreement_accepted"):
+        raise HTTPException(403, "This tutor is completing their onboarding and is not yet available for bookings.")
+
+    # 3. DEAL CHECK: Has Admin activated this pairing?
+    assignment_check = sb.table("assignments").select("is_active").eq("student_id", student_id).eq("tutor_id", payload.tutor_id).eq("subject", payload.subject).eq("is_active", True).execute()
+    if not assignment_check.data:
+        raise HTTPException(403, "This tutoring deal is not yet active. Please contact Admin to finalize payment and activate your sessions.")
+
+    # 4. CONFLICT CHECK: Is the tutor already busy?
+    if not student_res.data: raise HTTPException(404, "Student profile not found")
+    student_id = student_res.data["id"]
+
+    # 2. CONFLICT CHECK: Is the tutor already busy?
+    # Check for any session (scheduled or pending) within 1 hour of the requested time
+    start_buffer = (payload.scheduled_at - timedelta(minutes=59)).isoformat()
+    end_buffer = (payload.scheduled_at + timedelta(minutes=59)).isoformat()
+    
+    conflicts = sb.table("sessions").select("id").eq("tutor_id", payload.tutor_id).in_("status", ["scheduled", "pending"]).gte("scheduled_at", start_buffer).lte("scheduled_at", end_buffer).execute()
+    
+    if conflicts.data:
+        raise HTTPException(409, "The tutor has another session around this time. Please pick a different slot.")
+
+    # 3. Create session as PENDING
+    result = sb.table("sessions").insert({
+        "student_id": student_id,
+        "tutor_id": payload.tutor_id,
+        "subject": payload.subject,
+        "scheduled_at": payload.scheduled_at.isoformat(),
+        "status": "pending",
+        "mode": "online",
+        "duration_mins": 60
+    }).execute()
+    
+    if not result.data: raise HTTPException(500, "Failed to create booking")
+    session = result.data[0]
+    
+    # 4. Notify Tutor
+    tutor_info = sb.table("tutors").select("profile_id").eq("id", payload.tutor_id).single().execute().data
+    if tutor_info:
+        await NotificationService.create(
+            tutor_info["profile_id"], 
+            "general", 
+            "New Booking Request 📅", 
+            f"{current_user['full_name']} requested {payload.subject} for {payload.scheduled_at.strftime('%b %d at %I:%M %p')}.", 
+            sb
+        )
+    
+    return session
