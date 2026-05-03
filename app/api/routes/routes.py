@@ -1028,11 +1028,6 @@ async def book_session(payload: BookingRequest, current_user: dict = Depends(get
     if not assignment_check.data:
         raise HTTPException(403, "You cannot book this tutor. Please click 'Request this Tutor' first and wait for Admin assignment.")
 
-    # 3. CONTRACT CHECK: Is the tutor ready?
-    tutor_check = sb.table("tutors").select("agreement_accepted").eq("id", payload.tutor_id).single().execute()
-    if not tutor_check.data or not tutor_check.data.get("agreement_accepted"):
-        raise HTTPException(403, "This tutor is completing their onboarding and is not yet available for bookings.")
-
     # 3. DEAL CHECK: Has Admin activated this pairing?
     assignment_check = sb.table("assignments").select("is_active").eq("student_id", student_id).eq("tutor_id", payload.tutor_id).eq("subject", payload.subject).eq("is_active", True).execute()
     if not assignment_check.data:
