@@ -13,17 +13,14 @@ class Settings(BaseSettings):
     supabase_anon_key: str
     supabase_service_role_key: str
 
-   # JWT
+    # JWT
     secret_key: str = "temporary-dev-secret-key-change-this-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 30
 
-    # Email Settings (Pulled from .env)
-    smtp_host: str
-    smtp_port: int
-    smtp_user: str
-    smtp_password: str
+    # Email (Resend)
+    resend_api_key: str
     from_email: str
     from_name: str
 

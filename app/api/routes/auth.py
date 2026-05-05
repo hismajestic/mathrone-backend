@@ -173,17 +173,8 @@ async def register_student(payload: RegisterStudentRequest):
     if not user_id:
         raise HTTPException(500, "Failed to create user account")
 
-    # Manually create profile to avoid race conditions with triggers
-    profile_data = {
-        "id": user_id,
-        "full_name": payload.full_name,
-        "email": payload.email,
-        "role": "student",
-        "is_active": True,
-        "is_verified": False
-    }
-    sb.table("profiles").upsert(profile_data).execute()
-    profile = profile_data
+    # WAIT for the trigger to create the profile row
+    profile = _wait_for_profile(sb, user_id)
 
     # Create student record
     try:
@@ -245,18 +236,9 @@ async def register_tutor(payload: RegisterTutorRequest):
 
     print(f"✅ Auth user created: {user_id}")
 
-    # Manually create profile to avoid race conditions
-    profile_data = {
-        "id": user_id,
-        "full_name": payload.full_name,
-        "email": payload.email,
-        "phone": payload.phone,
-        "role": "tutor",
-        "is_active": True,
-        "is_verified": False
-    }
-    sb.table("profiles").upsert(profile_data).execute()
-    profile = profile_data
+    # WAIT for the trigger to create the profile row, then update
+    profile = _wait_for_profile(sb, user_id)
+    sb.table("profiles").update({"role": "tutor", "phone": payload.phone}).eq("id", user_id).execute()
 
     print(f"✅ Profile created and updated: {user_id}")
 
