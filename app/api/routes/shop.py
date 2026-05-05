@@ -155,6 +155,23 @@ class PlaceOrder(BaseModel):
 async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
     
+    # SECURITY FIX: Recalculate total on server to prevent price manipulation
+    server_total = 0
+    for item in payload.items:
+        if item.product_id:
+            p_record = sb.table("products").select("price, member_discount_pct").eq("id", item.product_id).single().execute().data
+            if p_record:
+                price = float(p_record["price"])
+                discount = (p_record.get("member_discount_pct") or 3) / 100
+                server_total += (price * (1 - discount)) * item.quantity
+        elif item.bundle_id:
+            b_record = sb.table("bundles").select("price").eq("id", item.bundle_id).single().execute().data
+            if b_record:
+                server_total += float(b_record["price"]) * item.quantity
+
+    # Use the server-calculated total
+    final_amount = server_total if server_total > 0 else payload.total_amount
+
     # Check for duplicate MoMo reference
     if payload.momo_reference:
         existing = sb.table("orders").select("id").eq("momo_reference", payload.momo_reference).execute()
@@ -163,7 +180,7 @@ async def place_order(payload: PlaceOrder, current_user: dict = Depends(get_curr
 
     order = sb.table("orders").insert({
         "user_id":          current_user["id"],
-        "total_amount":     payload.total_amount,
+        "total_amount":     final_amount,
         "payment_method":   payload.payment_method,
         "payment_phone":    payload.payment_phone,
         "delivery_address": payload.delivery_address,

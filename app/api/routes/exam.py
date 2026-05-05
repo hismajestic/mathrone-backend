@@ -99,13 +99,15 @@ def grade_matching(pairs: list, user_answer: str) -> tuple[int, int]:
     """Returns (earned_marks, total_marks) for a matching question."""
     if not pairs:
         return 0, 0
-    user_parts = [a.strip() for a in user_answer.split("||")] if user_answer else []
+    # Use a fixed-size list based on pairs length to prevent index shifting
+    user_parts = user_answer.split("||") if user_answer else []
     correct = 0
     for i, pair in enumerate(pairs):
-        given = user_parts[i].strip().lower() if i < len(user_parts) else ""
-        if given and given == pair.get("answer", "").strip().lower():
-            correct += 1
-    # Each pair worth 1 mark, total = number of pairs
+        if i < len(user_parts):
+            given = user_parts[i].strip().lower()
+            target = pair.get("answer", "").strip().lower()
+            if given == target and target != "":
+                correct += 1
     return correct, len(pairs)
 
 
@@ -115,6 +117,7 @@ class QuestionCreate(BaseModel):
     question: str
     type: str
     subject: Optional[str] = "general"
+    difficulty: str = "medium"  # Added: easy, medium, hard
     image_url: Optional[str] = None      # <--- Added this
     options: Optional[List[str]] = None
     correct_answer: Optional[str] = None
@@ -184,54 +187,62 @@ class StartExamPayload(BaseModel):
 
 
 def _select_questions_for_subject(all_questions: list, subjects: list, target_marks: int = 100) -> list:
-    """
-    Select questions from the library that:
-    1. Match the tutor's subjects (prefer subject-specific, fallback to 'general')
-    2. Total exactly `target_marks` marks (greedy bin-packing, best-effort)
-    3. Are shuffled so each exam feels different
-    """
     import random
+    
+    # 1. Define Synonyms to handle "Maths" vs "Mathematics" etc.
+    synonym_groups = [
+        {"mathematics", "maths", "math"},
+        {"physics", "phys"},
+        {"chemistry", "chem"},
+        {"biology", "bio"},
+        {"computer science", "ict", "coding", "programming", "computer"},
+        {"kinyarwanda", "kiny"},
+        {"literature", "lit"}
+    ]
 
-    subject_lower = [s.strip().lower() for s in (subjects or [])]
+    # Normalize tutor subjects
+    tutor_subs = [s.strip().lower() for s in (subjects or [])]
+    
+    # Expand tutor subjects using the synonym groups
+    expanded_tutor_subs = set(tutor_subs)
+    for sub in tutor_subs:
+        for group in synonym_groups:
+            if sub in group:
+                expanded_tutor_subs.update(group)
 
-    # Split into subject-matched, general, and other
-    matched, general, other = [], [], []
+    # 2. Categorize the questions
+    matched = []
+    general = []
+    
     for q in all_questions:
-        q_subj = (q.get("subject") or "general").strip().lower()
-        if q_subj in subject_lower:
+        q_subject = (q.get("subject") or "general").strip().lower()
+        
+        # Check if question subject matches any of the tutor's expanded subjects
+        if q_subject in expanded_tutor_subs:
             matched.append(q)
-        elif q_subj == "general":
+        elif q_subject == "general":
             general.append(q)
-        else:
-            other.append(q)
 
-    # Shuffle each pool independently for variety
+    # 3. Shuffle for variety
     random.shuffle(matched)
     random.shuffle(general)
-    random.shuffle(other)
-
-    # Priority pool: matched first, then general, then other as fallback
-    pool = matched + general + other
-
-    if not pool:
-        return []
-
-    # Greedy selection: fill up to target_marks
+    
+    pool = matched + general
     selected = []
     total = 0
+    
+    # 4. Greedy Selection to hit 100 marks
     for q in pool:
         q_marks = q.get("marks", 1)
         if total + q_marks <= target_marks:
             selected.append(q)
             total += q_marks
-        if total == target_marks:
+        if total >= target_marks:
             break
-
-    # If we still haven't hit target (not enough questions), return what we have
-    # Sort by order_num for consistent display
+            
+    # Final check: sort by order_num for the UI
     selected.sort(key=lambda q: q.get("order_num", 0))
     return selected
-
 
 @router.post("/start")
 async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get_current_user)):
@@ -248,7 +259,10 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
         raise HTTPException(403, "Invalid exam code. Please check your email for the correct code.")
 
     settings_row = sb.table("exam_settings").select("default_time_minutes", "instructions").eq("id", 1).single().execute().data
-    exam_minutes = settings_row["default_time_minutes"] if settings_row else 60
+    
+    # Use tutor-specific time if set, otherwise use global default
+    global_minutes = settings_row["default_time_minutes"] if settings_row else 60
+    exam_minutes = tutor.get("exam_time_minutes") or global_minutes
     instructions = settings_row["instructions"] if settings_row else "Please read carefully before starting"
 
     existing = sb.table("exam_attempts").select("id, status, started_at, time_limit_minutes, answers, question_ids").eq("tutor_id", tutor["id"]).execute().data
@@ -264,12 +278,12 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
                 stored_ids = attempt.get("question_ids") or []
                 if stored_ids:
                     questions = sb.table("exam_questions").select(
-                        "id, question, type, options, marks, order_num, pairs, subject"
+                        "id, question, type, options, marks, order_num, pairs, subject, image_url, difficulty"
                     ).in_("id", stored_ids).order("order_num").execute().data or []
                 else:
                     # Legacy fallback — no stored ids
                     questions = sb.table("exam_questions").select(
-                        "id, question, type, options, marks, order_num, pairs, subject"
+                        "id, question, type, options, marks, order_num, pairs, subject, image_url, difficulty"
                     ).eq("is_active", True).order("order_num").execute().data or []
                 elapsed = int((datetime.now(timezone.utc) - started).total_seconds())
                 remaining = max(0, attempt["time_limit_minutes"] * 60 - elapsed)
@@ -287,7 +301,7 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
 
     # Fetch full question library (admin fields stripped for security)
     all_questions = sb.table("exam_questions").select(
-        "id, question, type, options, marks, order_num, pairs, subject"
+        "id, question, type, options, marks, order_num, pairs, subject, image_url, difficulty"
     ).eq("is_active", True).execute().data or []
 
     if not all_questions:

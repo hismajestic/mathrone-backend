@@ -237,6 +237,7 @@ class AssignmentCreate(BaseModel):
     mode:       SessionMode
     notes:      Optional[str] = None
     start_date: Optional[date] = None
+    is_active:  bool = True
 
 
 # ── Messaging ──────────────────────────────────────────────────────────────────
@@ -279,3 +280,17 @@ class PaginatedResponse(BaseModel):
 class MessageResponse(BaseModel):
     message: str
     success: bool = True
+
+class StudentSessionBooking(BaseModel):
+    assignment_id: str
+    scheduled_at:  datetime
+    duration_mins: int = 60
+    notes:         Optional[str] = None
+
+class BookingRequest(BaseModel):
+    tutor_id:      str
+    subject:       str
+    scheduled_at:  datetime
+    duration_mins: int = 60
+    mode:          SessionMode = SessionMode.online
+    notes:         Optional[str] = None
