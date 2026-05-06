@@ -16,8 +16,8 @@ def generate_slug(title: str) -> str:
     slug = re.sub(r'-+', '-', slug)       # Replace multiple hyphens with single
     return slug.strip('-')
 
-def generate_description(content: str, max_length: int = 160) -> str:
-    """Generate meta description from content"""
+def generate_description(content: str, max_length: int = 300) -> str:
+    """Generate meta description from content (defaulting to 300 for flexibility)"""
     # Remove HTML tags and get first part of content
     clean_content = re.sub(r'<[^>]+>', '', content)
     description = clean_content.strip()
