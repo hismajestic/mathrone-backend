@@ -117,8 +117,9 @@ class QuestionCreate(BaseModel):
     question: str
     type: str
     subject: Optional[str] = "general"
-    difficulty: str = "medium"  # Added: easy, medium, hard
-    image_url: Optional[str] = None      # <--- Added this
+    level: Optional[str] = "All Levels" 
+    difficulty: str = "medium"
+    image_url: Optional[str] = None    
     options: Optional[List[str]] = None
     correct_answer: Optional[str] = None
     model_answer: Optional[str] = None
@@ -177,8 +178,29 @@ async def update_question(question_id: str, payload: QuestionCreate, admin: dict
 @router.delete("/questions/admin/{question_id}")
 async def delete_question(question_id: str, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
-    sb.table("exam_questions").delete().eq("id", question_id).execute()
-    return {"message": "Question deleted"}
+    try:
+        # First, delete any answers associated with this question to satisfy DB constraints
+        sb.table("exam_answers").delete().eq("question_id", question_id).execute()
+        # Then delete the question
+        sb.table("exam_questions").delete().eq("id", question_id).execute()
+        return {"message": "Question deleted"}
+    except Exception as e:
+        raise HTTPException(500, f"Deletion failed: {str(e)}")
+
+@router.post("/questions/admin/bulk-delete")
+async def bulk_delete_questions(payload: dict, admin: dict = Depends(require_admin)):
+    ids = payload.get("ids", [])
+    if not ids:
+        raise HTTPException(400, "No IDs provided")
+    sb = get_supabase_admin()
+    try:
+        # Delete answers first
+        sb.table("exam_answers").delete().in_("question_id", ids).execute()
+        # Delete questions
+        sb.table("exam_questions").delete().in_("id", ids).execute()
+        return {"message": f"Deleted {len(ids)} questions successfully"}
+    except Exception as e:
+        raise HTTPException(500, f"Bulk deletion failed: {str(e)}")
 
 # ─── TUTOR: take exam ──────────────────────────────────
 
@@ -186,44 +208,46 @@ class StartExamPayload(BaseModel):
     exam_code: str
 
 
-def _select_questions_for_subject(all_questions: list, subjects: list, target_marks: int = 100) -> list:
+def _select_questions_for_subject(all_questions: list, subjects: list, target_marks: int = 100, tutor_levels: list = None) -> list:
     import random
     
-    # 1. Define Synonyms to handle "Maths" vs "Mathematics" etc.
+    # 1. Normalize and Expand Subjects
     synonym_groups = [
         {"mathematics", "maths", "math"},
         {"physics", "phys"},
         {"chemistry", "chem"},
         {"biology", "bio"},
         {"computer science", "ict", "coding", "programming", "computer"},
-        {"kinyarwanda", "kiny"},
-        {"literature", "lit"}
+        {"social and religious studies", "srs", "social studies", "religion"},
+        {"science and elementary technologies", "set", "science and technology", "elementary technology"}
     ]
-
-    # Normalize tutor subjects
     tutor_subs = [s.strip().lower() for s in (subjects or [])]
+    t_levels = [l.strip().lower() for l in (tutor_levels or [])]
     
-    # Expand tutor subjects using the synonym groups
-    expanded_tutor_subs = set(tutor_subs)
+    expanded_subs = set(tutor_subs)
     for sub in tutor_subs:
         for group in synonym_groups:
-            if sub in group:
-                expanded_tutor_subs.update(group)
+            if sub in group: expanded_subs.update(group)
 
-    # 2. Categorize the questions
+    # 2. Filter questions by BOTH Subject AND Level
+    # We want questions that match the subject AND (match the tutor's level OR are "All Levels")
     matched = []
     general = []
     
     for q in all_questions:
-        q_subject = (q.get("subject") or "general").strip().lower()
+        q_sub = (q.get("subject") or "general").strip().lower()
+        q_lvl = (q.get("level") or "all levels").strip().lower()
         
-        # Check if question subject matches any of the tutor's expanded subjects
-        if q_subject in expanded_tutor_subs:
+        # Logic: Subject matches AND (Level matches OR Question is for everyone)
+        subject_match = q_sub in expanded_subs
+        level_match = q_lvl in t_levels or q_lvl == "all levels"
+        
+        if subject_match and level_match:
             matched.append(q)
-        elif q_subject == "general":
+        elif q_sub == "general":
             general.append(q)
 
-    # 3. Shuffle for variety
+    # 3. Shuffle and Select
     random.shuffle(matched)
     random.shuffle(general)
     
@@ -231,16 +255,13 @@ def _select_questions_for_subject(all_questions: list, subjects: list, target_ma
     selected = []
     total = 0
     
-    # 4. Greedy Selection to hit 100 marks
     for q in pool:
         q_marks = q.get("marks", 1)
         if total + q_marks <= target_marks:
             selected.append(q)
             total += q_marks
-        if total >= target_marks:
-            break
+        if total >= target_marks: break
             
-    # Final check: sort by order_num for the UI
     selected.sort(key=lambda q: q.get("order_num", 0))
     return selected
 
@@ -309,7 +330,8 @@ async def start_exam(payload: StartExamPayload, current_user: dict = Depends(get
 
     # Select 100-mark subject-specific question set
     tutor_subjects = tutor.get("subjects") or []
-    questions = _select_questions_for_subject(all_questions, tutor_subjects, target_marks=100)
+    tutor_levels = tutor.get("levels") or [] # Get levels from tutor profile
+    questions = _select_questions_for_subject(all_questions, tutor_subjects, target_marks=100, tutor_levels=tutor_levels)
 
     if not questions:
         raise HTTPException(400, "No questions available for your subjects. Please contact admin.")
