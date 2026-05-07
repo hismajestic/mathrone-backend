@@ -276,21 +276,12 @@ class PaginatedResponse(BaseModel):
     pages: int
 
 
-# ── Generic ────────────────────────────────────────────────────────────────────
+class LinkInstAdminRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    institution_id: str
 class MessageResponse(BaseModel):
     message: str
     success: bool = True
 
-class StudentSessionBooking(BaseModel):
-    assignment_id: str
-    scheduled_at:  datetime
-    duration_mins: int = 60
-    notes:         Optional[str] = None
-
-class BookingRequest(BaseModel):
-    tutor_id:      str
-    subject:       str
-    scheduled_at:  datetime
-    duration_mins: int = 60
-    mode:          SessionMode = SessionMode.online
-    notes:         Optional[str] = None

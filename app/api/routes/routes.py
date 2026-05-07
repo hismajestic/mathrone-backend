@@ -531,13 +531,8 @@ async def book_session_student(
                 matching_slot = slot
                 break
     
-    if not matching_slot:
-        slot_times = ', '.join([f"{s['day']} {s['start']}-{s['end']}" for s in slots])
-        raise HTTPException(
-            400,
-            f"Requested time ({slot_day} {slot_start}-{slot_end}) doesn't match tutor's availability. "
-            f"Available: {slot_times}"
-        )
+    # Determine status: 'scheduled' if in slot, 'pending' if outside
+    final_status = "scheduled" if matching_slot else "pending"
     
     # Calculate session end time
     session_start = payload.scheduled_at
@@ -591,7 +586,7 @@ async def book_session_student(
         "platform": platform,
         "location": payload.location,
         "notes": payload.notes,
-        "status": "scheduled",
+        "status": final_status, # <--- Dynamically set
     }).execute()
     
     session = result.data[0]

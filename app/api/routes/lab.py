@@ -79,11 +79,39 @@ async def list_tokens(admin: dict = Depends(require_admin)):
 
 @router.post("/tokens", status_code=201)
 async def create_token(payload: TokenCreate, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ("admin", "tutor"):
-        raise HTTPException(403, "Only tutors and admins can generate lab links")
+    if current_user.get("role") not in ("admin", "tutor", "institution_admin"):
+        raise HTTPException(403, "Only admins, tutors, or institution admins can generate lab links")
     
     sb = get_supabase_admin()
-    
+
+    # ─── INSTITUTION ADMIN: Can only generate links for their own institution ───
+    if current_user.get("role") == "institution_admin":
+        # Fetch which institution this admin belongs to
+        inst_membership = sb.table("institution_admins").select("institution_id").eq(
+            "profile_id", current_user["id"]
+        ).single().execute().data
+
+        if not inst_membership:
+            raise HTTPException(403, "You are not linked to any institution.")
+
+        their_inst_id = inst_membership["institution_id"]
+
+        # Verify the institution's subscription is still valid
+        inst = sb.table("lab_institutions").select("id, name, licenses, expires_at").eq(
+            "id", their_inst_id
+        ).single().execute().data
+        if not inst:
+            raise HTTPException(404, "Institution not found.")
+
+        if inst.get("expires_at"):
+            from datetime import datetime, timezone
+            inst_expires = datetime.fromisoformat(inst["expires_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > inst_expires:
+                raise HTTPException(403, f"Your institution's subscription has expired. Contact Mathrone to renew.")
+
+        # Force the institution_id to be their own — they cannot generate links for other institutions
+        payload.institution_id = their_inst_id
+
     # ─── IMPORTANT: Tutors must have at least one active assignment ─────────────
     if current_user.get("role") == "tutor":
         tutor = sb.table("tutors").select("id").eq(
@@ -145,60 +173,74 @@ async def revoke_token(token_id: str, admin: dict = Depends(require_admin)):
 async def validate_token(token: str, payload: ValidatePayload):
     sb = get_supabase_admin()
 
-    # Fetch token record
+    # 1. Fetch token and check fundamental status
     try:
         record = sb.table("lab_tokens").select(
-            "*, lab_institutions(id, name, licenses)"
+            "*, lab_institutions(id, name, licenses, expires_at)"
         ).eq("token", token).single().execute().data
     except Exception:
-        raise HTTPException(404, "This link is invalid or has been revoked.")
+        raise HTTPException(404, "Invalid or unrecognized access link.")
 
     if record["is_revoked"]:
-        raise HTTPException(403, "This access link has been revoked. Please contact Mathrone Academy.")
+        raise HTTPException(403, "This access link has been revoked by Mathrone Admin.")
 
-    # Check expiry
+    # 2. Check Expiry (Token Level)
     expires = datetime.fromisoformat(record["expires_at"].replace("Z", "+00:00"))
     if datetime.now(timezone.utc) > expires:
-        raise HTTPException(403, "This access link has expired. Please contact Mathrone Academy.")
+        raise HTTPException(403, "Your access period has expired. Please renew your subscription.")
 
-    # Device lock: only the FIRST device that calls this endpoint gets access
-    if not record["device_fingerprint"]:
-        # First device — lock it now
-        sb.table("lab_tokens").update(
-            {"device_fingerprint": payload.device_fingerprint}
-        ).eq("token", token).execute()
-    elif record["device_fingerprint"] != payload.device_fingerprint:
-        raise HTTPException(403, "This link has already been activated on another device. Each link is single-device only.")
+    # 3. INDIVIDUAL PROTECTION (Device Locking)
+    # If no institution is linked, this is a private purchase. Lock it to the first device.
+    if not record["institution_id"]:
+        if record["device_fingerprint"] and record["device_fingerprint"] != payload.device_fingerprint:
+            raise HTTPException(403, "Security Alert: This link is already registered to a different device. Sharing is prohibited.")
+        
+        if not record["device_fingerprint"]:
+            sb.table("lab_tokens").update({"device_fingerprint": payload.device_fingerprint}).eq("token", token).execute()
 
-    # Concurrency check for institution tokens
-    inst = record.get("lab_institutions")
-    if inst:
-        # Clean up stale pings first
+    # 4. INSTITUTION PROTECTION (License Seat Management)
+    if record["institution_id"]:
+        inst = record["lab_institutions"]
+        
+        # Check if school subscription itself is expired
+        if inst["expires_at"]:
+            inst_expires = datetime.fromisoformat(inst["expires_at"].replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > inst_expires:
+                raise HTTPException(403, f"The subscription for {inst['name']} has expired. Please contact your administrator.")
+
+        # Clean stale sessions before checking limits
         sb.rpc("cleanup_stale_lab_sessions").execute()
 
-        active = sb.table("lab_active_sessions").select("id").eq(
-            "institution_id", inst["id"]
-        ).execute().data or []
+        # Count active seats for this school
+        active_res = sb.table("lab_active_sessions").select("id", count="exact").eq("institution_id", inst["id"]).execute()
+        active_count = active_res.count or 0
 
-        # Check if this device already has a session (re-join allowed)
-        my_session = sb.table("lab_active_sessions").select("id").eq(
-            "token", token
-        ).eq("device_fingerprint", payload.device_fingerprint).execute().data
+        # Check if THIS specific device is already counted (Allow re-entry/refresh)
+        my_session = sb.table("lab_active_sessions").select("id").eq("token", token).eq("device_fingerprint", payload.device_fingerprint).execute().data
 
-        if not my_session and len(active) >= inst["licenses"]:
-            raise HTTPException(
-                403,
-                f"Your institution ({inst['name']}) has reached the limit of "
-                f"{inst['licenses']} active lab(s). Please ask a colleague to "
-                f"close their session, or contact Mathrone Academy to upgrade."
-            )
+        if not my_session and active_count >= inst["licenses"]:
+            raise HTTPException(403, f"License Limit Reached: {inst['name']} is allowed {inst['licenses']} concurrent session(s). All seats are currently full.")
+
+    # Determine if this user should have Host privileges
+    # A host is either the person who created the token or anyone using an Institutional link 
+    # that is recognized as the 'Primary Device'.
+    is_host_privilege = False
+    if not record["institution_id"]:
+        # Individual B2C: Only the first locked device is the Host
+        if record["device_fingerprint"] == payload.device_fingerprint:
+            is_host_privilege = True
+    else:
+        # B2B Institution: For simplicity in classrooms, we check if they 
+        # opened it with the intent to host (this can be expanded later)
+        is_host_privilege = True 
 
     return {
         "valid": True,
         "buyer_name": record["buyer_name"],
-        "institution_id": inst["id"] if inst else None,
-        "institution_name": inst["name"] if inst else None,
+        "institution_id": record["institution_id"],
+        "institution_name": record["lab_institutions"]["name"] if record["institution_id"] else "Mathrone Business Partner",
         "session_id": record.get("session_id"),
+        "is_host": is_host_privilege 
     }
 
 
@@ -263,3 +305,100 @@ async def get_whiteboard(session_id: str):
     # This fetches the saved drawings when you refresh the page
     result = sb.table("lab_whiteboard_pages").select("json_data").eq("session_id", session_id).order("page_index").execute()
     return result.data or []
+
+
+# ─── INSTITUTION ADMIN: Self-service portal endpoints ─────────────────────────
+
+@router.get("/my-institution")
+async def get_my_institution(current_user: dict = Depends(get_current_user)):
+    """Institution admin sees their own institution + active session count."""
+    if current_user.get("role") not in ("admin", "institution_admin"):
+        raise HTTPException(403, "Not authorized")
+    sb = get_supabase_admin()
+
+    if current_user.get("role") == "institution_admin":
+        membership_res = sb.table("institution_admins").select("institution_id").eq(
+            "profile_id", current_user["id"]
+        ).execute()
+        
+        if not membership_res.data:
+            raise HTTPException(403, "Access Denied: Your account is not linked to any School/Institution yet. Please contact Mathrone Admin.")
+            
+        inst_id = membership_res.data[0]["institution_id"]
+    else:
+        # Admin can pass ?institution_id= query param — handled via tokens list
+        raise HTTPException(400, "Use /lab/institutions for admin access")
+
+    inst = sb.table("lab_institutions").select("*").eq("id", inst_id).single().execute().data
+    if not inst:
+        raise HTTPException(404, "Institution not found")
+
+    sb.rpc("cleanup_stale_lab_sessions").execute()
+    active_res = sb.table("lab_active_sessions").select("id", count="exact").eq("institution_id", inst_id).execute()
+    inst["active_sessions"] = active_res.count or 0
+    return inst
+
+
+@router.get("/my-institution/tokens")
+async def get_my_institution_tokens(current_user: dict = Depends(get_current_user)):
+    """Institution admin sees all tokens they've generated."""
+    if current_user.get("role") not in ("admin", "institution_admin"):
+        raise HTTPException(403, "Not authorized")
+    sb = get_supabase_admin()
+
+    membership = sb.table("institution_admins").select("institution_id").eq(
+        "profile_id", current_user["id"]
+    ).single().execute().data
+    if not membership:
+        raise HTTPException(404, "Not linked to any institution.")
+
+    tokens = sb.table("lab_tokens").select("*").eq(
+        "institution_id", membership["institution_id"]
+    ).order("created_at", desc=True).execute().data or []
+    return tokens
+
+
+@router.delete("/my-institution/tokens/{token_id}")
+async def revoke_my_token(token_id: str, current_user: dict = Depends(get_current_user)):
+    """Institution admin can revoke their own tokens only."""
+    if current_user.get("role") not in ("admin", "institution_admin"):
+        raise HTTPException(403, "Not authorized")
+    sb = get_supabase_admin()
+
+    if current_user.get("role") == "institution_admin":
+        membership = sb.table("institution_admins").select("institution_id").eq(
+            "profile_id", current_user["id"]
+        ).single().execute().data
+        # Verify this token belongs to their institution before revoking
+        token_rec = sb.table("lab_tokens").select("institution_id").eq("id", token_id).single().execute().data
+        if not token_rec or token_rec["institution_id"] != membership["institution_id"]:
+            raise HTTPException(403, "This token does not belong to your institution.")
+
+    sb.table("lab_tokens").update({"is_revoked": True}).eq("id", token_id).execute()
+    return {"message": "Token revoked"}
+class LinkInstAdminRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    institution_id: str
+
+@router.post("/admin/create-institution-admin", tags=["Admin"])
+async def create_inst_admin(payload: LinkInstAdminRequest, admin: dict = Depends(require_admin)):
+    from app.api.routes.auth import _create_user_via_supabase, _wait_for_profile
+    sb = get_supabase_admin()
+    
+    # 1. Create the Auth User
+    auth_resp = _create_user_via_supabase(payload.email, payload.password, payload.full_name, "institution_admin")
+    user_id = auth_resp.user.id
+    
+    # 2. Ensure profile exists and has the correct role
+    _wait_for_profile(sb, user_id)
+    sb.table("profiles").update({"role": "institution_admin", "is_verified": True}).eq("id", user_id).execute()
+    
+    # 3. Link them to the school
+    sb.table("institution_admins").insert({
+        "profile_id": user_id,
+        "institution_id": payload.institution_id
+    }).execute()
+    
+    return {"message": f"Institution Admin {payload.full_name} created successfully!"}

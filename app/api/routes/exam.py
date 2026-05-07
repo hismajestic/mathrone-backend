@@ -164,7 +164,9 @@ async def update_question(question_id: str, payload: QuestionCreate, admin: dict
         "question": payload.question,
         "type": payload.type,
         "subject": payload.subject or "general",
-        "image_url": payload.image_url,  # <--- Added this
+        "level": payload.level or "All Levels",
+        "difficulty": payload.difficulty or "medium",
+        "image_url": payload.image_url,
         "marks": marks,
         "order_num": payload.order_num,
         "options": payload.options,
