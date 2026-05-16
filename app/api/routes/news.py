@@ -96,6 +96,13 @@ def generate_tags(content: str, title: str = "", max_tags: int = 5) -> list[str]
 
 router = APIRouter(prefix="/news", tags=["News"])
 
+@router.get("/count/total")
+async def get_news_count():
+    """Returns the total number of published articles"""
+    sb = get_supabase_admin()
+    res = sb.table("news_posts").select("id", count="exact").execute()
+    return {"count": res.count or 0}
+
 
 class NewsCreate(BaseModel):
     title:       str
