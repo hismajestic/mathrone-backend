@@ -22,6 +22,10 @@ class CourseCreate(BaseModel):
     level: Optional[str] = None
     subject: Optional[str] = None
     is_published: bool = False
+    curriculum: Optional[str] = None # This will now store Category ID
+    term: Optional[str] = None
+    is_exam_prep: bool = False
+    tags: Optional[list] = [] # Added for SEO grouping
     
 
 class CourseUpdate(BaseModel):
@@ -272,9 +276,22 @@ def create_course(course: CourseCreate, admin=Depends(require_admin)):
 @router.patch("/admin/{course_id}")
 def update_course(course_id: str, course: CourseUpdate, admin=Depends(require_admin)):
     sb = get_supabase_admin()
+    # Exclude any fields that are meant for metadata or are None
     data = {k: v for k, v in course.dict().items() if v is not None}
-    res = sb.table("courses").update(data).eq("id", course_id).execute()
-    return res.data[0]
+    
+    # Safety: Postgrest sometimes chokes if the ID is included in the update body
+    if "id" in data:
+        del data["id"]
+        
+    try:
+        res = sb.table("courses").update(data).eq("id", course_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Course not found")
+        return res.data[0]
+    except Exception as e:
+        # If the DB still reports missing updated_at after Step 1, 
+        # it means there's a malformed trigger in Supabase.
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/admin/{course_id}")
 def delete_course(course_id: str, admin=Depends(require_admin)):
