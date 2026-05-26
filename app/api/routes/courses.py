@@ -23,6 +23,7 @@ class CourseCreate(BaseModel):
     subject: Optional[str] = None
     is_published: bool = False
     curriculum: Optional[str] = None # This will now store Category ID
+    business_tier: Optional[str] = "standard" # For tiered access
     term: Optional[str] = None
     is_exam_prep: bool = False
     tags: Optional[list] = [] # Added for SEO grouping
@@ -266,6 +267,32 @@ async def upload_course_image(file: UploadFile = File(...), admin=Depends(requir
             clean_msg = "Network connection to Supabase timed out. Please check your internet and try again."
             
         raise HTTPException(status_code=400, detail=clean_msg)
+@router.post("/admin/upload-resource")
+async def upload_course_resource(file: UploadFile = File(...), admin=Depends(require_admin)):
+    sb = get_supabase_admin()
+    import uuid
+    import asyncio
+    
+    # Allow PDFs, Word Docs, and PowerPoints
+    ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "ppt", "pptx", "txt", "xlsx"}
+    ext = file.filename.split(".")[-1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, detail=f"File type .{ext} not supported.")
+        
+    filename = f"course-resources/{uuid.uuid4()}.{ext}"
+    file_bytes = await file.read()
+    
+    try:
+        # Upload to Supabase 'assets' bucket
+        sb.storage.from_("assets").upload(
+            path=filename,
+            file=file_bytes,
+            file_options={"content-type": file.content_type}
+        )
+        url = sb.storage.from_("assets").get_public_url(filename)
+        return {"url": url, "filename": file.filename}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/admin")
 def create_course(course: CourseCreate, admin=Depends(require_admin)):
