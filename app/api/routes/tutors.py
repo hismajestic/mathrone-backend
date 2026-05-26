@@ -20,21 +20,25 @@ router = APIRouter(prefix="/tutors", tags=["Tutors"])
 
 @router.get("/search", response_model=PaginatedResponse)
 async def search_tutors(
-    subject:    Optional[str]   = Query(None),
-    level:      Optional[str]   = Query(None),
-    mode:       Optional[str]   = Query(None),
-    location:   Optional[str]   = Query(None),
-    min_rating: Optional[float] = Query(None),
-    max_rate:   Optional[float] = Query(None),
-    page:       int             = Query(1, ge=1),
-    limit:      int             = Query(12, ge=1, le=50),
-    current_user: dict          = Depends(get_current_user),
+    subject:        Optional[str]   = Query(None),
+    level:          Optional[str]   = Query(None),
+    mode:           Optional[str]   = Query(None),
+    location:       Optional[str]   = Query(None),
+    min_rating:     Optional[float] = Query(None),
+    max_rate:       Optional[float] = Query(None),
+    available_only: bool            = Query(True),
+    page:           int             = Query(1, ge=1),
+    limit:          int             = Query(12, ge=1, le=50),
+    current_user: dict              = Depends(get_current_user),
 ):
-    """Search approved, available tutors with optional filters."""
+    """Search approved tutors with optional filters."""
     sb = get_supabase_admin()
     q  = sb.table("tutors").select(
         "*, profiles!tutors_profile_id_fkey(id, full_name, email, avatar_url, phone)"
-    ).eq("status", "approved").eq("is_available", True)
+    ).eq("status", "approved")
+
+    if available_only:
+        q = q.eq("is_available", True)
 
     if subject:
         q = q.contains("subjects", [subject])
