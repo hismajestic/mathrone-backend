@@ -136,8 +136,10 @@ def get_my_courses(user=Depends(get_current_user)):
 
 @router.get("/my/{course_id}/lessons")
 def get_course_lessons(course_id: str, user=Depends(get_current_user)):
+    # Clean ID to prevent "uuid--undefined" crashes
+    clean_course_id = course_id.split('--')[0]
     sb = get_supabase_admin()
-    enrollment = sb.table("course_enrollments").select("id").eq("student_id", user["id"]).eq("course_id", course_id).execute()
+    enrollment = sb.table("course_enrollments").select("id").eq("student_id", user["id"]).eq("course_id", clean_course_id).execute()
     if not enrollment.data and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="You do not have access to this course")
     lessons = sb.table("course_lessons").select("*").eq("course_id", course_id).order("order_num").execute()
@@ -361,15 +363,25 @@ def update_lesson_progress(progress: LessonProgressUpdate, user=Depends(get_curr
         "course_id": progress.course_id,
         "completed": progress.completed,
         "completed_at": datetime.now(timezone.utc).isoformat() if progress.completed else None
-    }).execute()
+    }, on_conflict="student_id,lesson_id").execute()
     return {"message": "Progress saved"}
 
 @router.get("/my/{course_id}/progress")
 def get_course_progress(course_id: str, user=Depends(get_current_user)):
-    """Return completed lesson IDs for a course for the logged-in student."""
+    """Return completed lesson IDs and total lesson count for a course."""
+    clean_course_id = course_id.split('--')[0]
     sb = get_supabase_admin()
-    res = sb.table("lesson_progress").select("lesson_id, completed, completed_at").eq("student_id", user["id"]).eq("course_id", course_id).eq("completed", True).execute()
-    return {"completed_lesson_ids": [r["lesson_id"] for r in res.data]}
+    
+    # 1. Get completed lessons
+    done_res = sb.table("lesson_progress").select("lesson_id").eq("student_id", user["id"]).eq("course_id", clean_course_id).eq("completed", True).execute()
+    
+    # 2. Get total lessons count for this course
+    total_res = sb.table("course_lessons").select("id", count="exact").eq("course_id", clean_course_id).execute()
+    
+    return {
+        "completed_lesson_ids": [r["lesson_id"] for r in (done_res.data or [])],
+        "total_lessons": total_res.count or 0
+    }
 
 
 

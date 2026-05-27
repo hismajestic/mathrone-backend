@@ -26,32 +26,26 @@ async def get_posts(category: Optional[str] = None, current_user: dict = Depends
         query = query.eq("category", category)
     return query.execute().data or []
 
+# ── Add comment with role-aware flagging ──────────────────────────────────────
+# Flagging logic: only flag messages between tutors and students (not admin comms)
+def _should_flag(sender_role: str, recipient_role: str) -> bool:
+    flagged_pairs = {("tutor", "student"), ("student", "tutor")}
+    return (sender_role, recipient_role) in flagged_pairs
+
 # ── Create post ────────────────────────────────────────────────────────────────
 @router.post("/posts", status_code=201)
 async def create_post(payload: PostCreate, current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
+    role = current_user.get("role", "student")
     result = sb.table("forum_posts").insert({
         "author_id": current_user["id"],
         "title":     payload.title,
         "content":   payload.content,
         "category":  payload.category,
-        "status":    "pending",
+        "status":    "approved",  # All users post freely; admins can delete if needed
     }).execute()
 
-    # Notify admins
-    admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
-    for admin in admins:
-        try:
-            await NotificationService.create(
-                admin["id"], "general",
-                "New Forum Post Pending ✍️",
-                f"A new post '{payload.title}' needs your approval.",
-                sb,
-            )
-        except Exception:
-            pass
-
-    return {"message": "Post submitted for review! ✅"}
+    return {"message": "Post published! ✅"}
 
 # ── Get comments for a post ────────────────────────────────────────────────────
 @router.get("/posts/{post_id}/comments")
@@ -65,17 +59,27 @@ async def get_comments(post_id: str, current_user: dict = Depends(get_current_us
 @router.post("/posts/{post_id}/comments", status_code=201)
 async def add_comment(post_id: str, payload: CommentCreate, current_user: dict = Depends(get_current_user)):
     sb = get_supabase_admin()
-    post = sb.table("forum_posts").select("author_id, title").eq("id", post_id).single().execute().data
+    post = sb.table("forum_posts").select(
+        "author_id, title, profiles!forum_posts_author_id_fkey(role)"
+    ).eq("id", post_id).single().execute().data
     if not post:
         raise HTTPException(404, "Post not found")
+
+    sender_role    = current_user.get("role", "student")
+    recipient_role = (post.get("profiles") or {}).get("role", "student")
+
+    # Flag comment only when it's a direct tutor↔student interaction
+    should_flag = _should_flag(sender_role, recipient_role)
+
     sb.table("forum_comments").insert({
         "post_id":   post_id,
         "author_id": current_user["id"],
         "content":   payload.content,
+        "is_flagged": should_flag,
     }).execute()
 
-    # Notify post author
-    if post["author_id"] != current_user["id"]:
+    # Notify post author (skip if admin commenting — no need to ping)
+    if post["author_id"] != current_user["id"] and sender_role != "admin":
         try:
             await NotificationService.create(
                 post["author_id"], "general",
@@ -112,23 +116,26 @@ async def get_pending_posts(admin: dict = Depends(require_admin)):
         "*, profiles!forum_posts_author_id_fkey(full_name, avatar_url, role)"
     ).eq("status", "pending").order("created_at").execute().data or []
 
-# ── Admin — approve/reject post ───────────────────────────────────────────────
+# ── Admin — moderate post (kept for legacy flag handling) ─────────────────────
+# Posts are now open to all users; this endpoint remains for edge-case status
+# overrides (e.g. hiding spam without full deletion).
 @router.patch("/admin/posts/{post_id}")
 async def moderate_post(post_id: str, action: str, admin: dict = Depends(require_admin)):
     sb = get_supabase_admin()
-    if action not in ["approved", "rejected"]:
-        raise HTTPException(400, "Action must be approved or rejected")
+    if action not in ["approved", "hidden"]:
+        raise HTTPException(400, "Action must be 'approved' or 'hidden'")
     post = sb.table("forum_posts").select("author_id, title").eq("id", post_id).single().execute().data
     sb.table("forum_posts").update({"status": action}).eq("id", post_id).execute()
-    try:
-        await NotificationService.create(
-            post["author_id"], "general",
-            f"Your post was {action} {'✅' if action == 'approved' else '❌'}",
-            f"Your forum post '{post['title']}' has been {action} by admin.",
-            sb,
-        )
-    except Exception:
-        pass
+    if action == "hidden":
+        try:
+            await NotificationService.create(
+                post["author_id"], "general",
+                "Your post was hidden ⚠️",
+                f"Your forum post '{post['title']}' was hidden by admin for review.",
+                sb,
+            )
+        except Exception:
+            pass
     return {"message": f"Post {action}"}
 
 # ── Admin — pin/unpin post ─────────────────────────────────────────────────────
@@ -155,3 +162,35 @@ async def delete_post(post_id: str, admin: dict = Depends(require_admin)):
     except Exception:
         pass
     return {"message": "Post deleted"}
+
+# ── Author: Edit own post ──────────────────────────────────────────────────────
+class PostUpdate(BaseModel):
+    title:    Optional[str] = None
+    content:  Optional[str] = None
+    category: Optional[str] = None
+
+@router.patch("/posts/{post_id}")
+async def edit_post(post_id: str, payload: PostUpdate, current_user: dict = Depends(get_current_user)):
+    sb = get_supabase_admin()
+    post = sb.table("forum_posts").select("author_id, title").eq("id", post_id).single().execute().data
+    if not post:
+        raise HTTPException(404, "Post not found")
+    if post["author_id"] != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(403, "You can only edit your own posts")
+    update_data = {k: v for k, v in payload.dict().items() if v is not None}
+    if not update_data:
+        raise HTTPException(400, "Nothing to update")
+    sb.table("forum_posts").update(update_data).eq("id", post_id).execute()
+    return {"message": "Post updated ✅"}
+
+# ── Author: Delete own post ────────────────────────────────────────────────────
+@router.delete("/posts/{post_id}")
+async def delete_own_post(post_id: str, current_user: dict = Depends(get_current_user)):
+    sb = get_supabase_admin()
+    post = sb.table("forum_posts").select("author_id, title").eq("id", post_id).single().execute().data
+    if not post:
+        raise HTTPException(404, "Post not found")
+    if post["author_id"] != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(403, "You can only delete your own posts")
+    sb.table("forum_posts").delete().eq("id", post_id).execute()
+    return {"message": "Post deleted ✅"}
