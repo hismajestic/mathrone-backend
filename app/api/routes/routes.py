@@ -218,12 +218,86 @@ async def assign_request(
     admin       = Depends(require_admin),
 ):
     sb = get_supabase_admin()
+
+    # 1. Fetch the original request so we have subject/mode/notes/student
+    try:
+        request = sb.table("tutoring_requests").select(
+            "*, students(id, profile_id)"
+        ).eq("id", request_id).single().execute().data
+    except Exception:
+        raise HTTPException(404, "Request not found")
+
+    student_id  = request["students"]["id"]
+    profile_id  = request["students"]["profile_id"]
+    subject     = payload.subject  or request.get("subject")  or ""
+    mode        = payload.mode     or request.get("mode")      or "online"
+    notes       = payload.notes    or request.get("notes")     or None
+
+    # 2. Look up tutor name for notifications
+    try:
+        tutor = sb.table("tutors").select(
+            "id, profile_id, profiles!tutors_profile_id_fkey(full_name)"
+        ).eq("id", payload.tutor_id).single().execute().data
+        tutor_name = (tutor.get("profiles") or {}).get("full_name", "Your tutor")
+    except Exception:
+        raise HTTPException(404, "Tutor not found")
+
+    # 3. Deactivate any previous assignment for same student + subject
+    sb.table("assignments").update({"is_active": False}).eq(
+        "student_id", student_id
+    ).eq("subject", subject).execute()
+
+    # 4. Check if assignment already exists (reactivate) or create new
+    existing = sb.table("assignments").select("id").eq(
+        "student_id", student_id
+    ).eq("tutor_id", payload.tutor_id).eq("subject", subject).execute().data
+
+    if existing:
+        sb.table("assignments").update({
+            "is_active":   True,
+            "mode":        mode,
+            "notes":       notes,
+            "assigned_by": admin["id"],
+        }).eq("id", existing[0]["id"]).execute()
+    else:
+        sb.table("assignments").insert({
+            "student_id":  student_id,
+            "tutor_id":    payload.tutor_id,
+            "subject":     subject,
+            "mode":        mode,
+            "notes":       notes,
+            "is_active":   True,
+            "assigned_by": admin["id"],
+        }).execute()
+
+    # 5. Mark the request as assigned
     sb.table("tutoring_requests").update({
         "status":         "assigned",
         "assigned_tutor": payload.tutor_id,
         "handled_by":     admin["id"],
     }).eq("id", request_id).execute()
-    return MessageResponse(message="Tutor assigned to request")
+
+    # 6. Notify student and tutor
+    try:
+        await NotificationService.create(
+            profile_id, "tutor_assigned",
+            "Tutor Assigned! 🎉",
+            f"Great news! {tutor_name} has been assigned as your {subject} tutor.",
+            sb,
+        )
+    except Exception:
+        pass
+    try:
+        await NotificationService.create(
+            tutor["profile_id"], "tutor_assigned",
+            "New Student Assigned 🎓",
+            f"You have been assigned a new student for {subject}.",
+            sb,
+        )
+    except Exception:
+        pass
+
+    return MessageResponse(message="Tutor assigned and deal created successfully ✅")
 
 
 # ============================================================

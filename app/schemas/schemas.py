@@ -171,6 +171,9 @@ class TutoringRequestCreate(BaseModel):
 
 class TutoringRequestAssign(BaseModel):
     tutor_id: str
+    subject:  Optional[str] = None
+    mode:     Optional[str] = None
+    notes:    Optional[str] = None
     notes:    Optional[str] = None
 
 

@@ -18,6 +18,99 @@ router = APIRouter(prefix="/tutors", tags=["Tutors"])
 
 # ── Public / tutor-facing ──────────────────────────────────────────────────────
 
+# Subject synonym map — partial input expands to all known aliases
+_SUBJECT_SYNONYMS: dict[str, list[str]] = {
+    "math":        ["mathematics", "math", "maths", "calculus", "algebra", "statistics", "trigonometry"],
+    "maths":       ["mathematics", "math", "maths", "calculus", "algebra", "statistics", "trigonometry"],
+    "mathematics": ["mathematics", "math", "maths", "calculus", "algebra", "statistics", "trigonometry"],
+    "calc":        ["calculus", "mathematics", "math"],
+    "stats":       ["statistics", "mathematics"],
+    "phy":         ["physics", "physical science"],
+    "phys":        ["physics", "physical science"],
+    "physics":     ["physics", "physical science"],
+    "chem":        ["chemistry", "chemical", "physical science"],
+    "chemistry":   ["chemistry", "chemical", "physical science"],
+    "bio":         ["biology", "life science", "science"],
+    "biology":     ["biology", "life science", "science"],
+    "sci":         ["science", "physics", "chemistry", "biology", "physical science", "life science"],
+    "science":     ["science", "physics", "chemistry", "biology", "physical science", "life science"],
+    "cs":          ["computer science", "ict", "programming", "coding", "computing"],
+    "comp":        ["computer science", "ict", "programming", "coding", "computing"],
+    "ict":         ["ict", "computer science", "computing", "programming"],
+    "computer":    ["computer science", "ict", "computing", "programming"],
+    "prog":        ["programming", "computer science", "coding", "ict"],
+    "code":        ["coding", "programming", "computer science"],
+    "coding":      ["coding", "programming", "computer science"],
+    "eng":         ["english", "literature", "english literature"],
+    "english":     ["english", "literature", "english literature", "language arts"],
+    "lit":         ["literature", "english", "english literature"],
+    "french":      ["french", "français"],
+    "fre":         ["french", "français"],
+    "kiny":        ["kinyarwanda"],
+    "kinyarwanda": ["kinyarwanda"],
+    "swah":        ["kiswahili", "swahili"],
+    "kiswahili":   ["kiswahili", "swahili"],
+    "swahili":     ["kiswahili", "swahili"],
+    "span":        ["spanish"],
+    "econ":        ["economics", "economy", "business"],
+    "economics":   ["economics", "economy", "business"],
+    "biz":         ["business", "entrepreneurship", "economics"],
+    "business":    ["business", "entrepreneurship", "economics"],
+    "entre":       ["entrepreneurship", "business"],
+    "geo":         ["geography"],
+    "geography":   ["geography"],
+    "hist":        ["history"],
+    "history":     ["history"],
+    "acc":         ["accounting", "bookkeeping", "financial literacy"],
+    "accounting":  ["accounting", "bookkeeping", "financial literacy"],
+    "fin":         ["finance", "financial literacy", "accounting"],
+    "music":       ["music", "music theory"],
+    "art":         ["art", "fine art", "design", "graphic design"],
+    "design":      ["graphic design", "design", "art"],
+    "graphic":     ["graphic design", "design"],
+    "web":         ["web development", "programming", "computer science"],
+    "pe":          ["physical education", "sport", "sports"],
+    "sport":       ["physical education", "sport", "sports"],
+    "rel":         ["religious education", "religion", "cre", "ire"],
+    "religion":    ["religious education", "religion", "cre", "ire"],
+}
+
+def _subject_terms(raw: str) -> list[str]:
+    """Return expanded list of terms to match against, including the raw input."""
+    key = raw.strip().lower()
+    # Direct synonym lookup
+    if key in _SUBJECT_SYNONYMS:
+        return list({key} | set(_SUBJECT_SYNONYMS[key]))
+    # Prefix match: "physi" hits "physics"
+    prefix_hits: list[str] = []
+    for canon, aliases in _SUBJECT_SYNONYMS.items():
+        if canon.startswith(key) or any(a.startswith(key) for a in aliases):
+            prefix_hits.extend([canon] + aliases)
+    if prefix_hits:
+        return list({key} | set(prefix_hits))
+    # Fallback: just the raw input
+    return [key]
+
+def _tutor_matches_subject(tutor: dict, terms: list[str]) -> bool:
+    """True if any of the tutor's subjects fuzzy-matches any search term."""
+    tutor_subjects = [s.lower() for s in (tutor.get("subjects") or [])]
+    tutor_bio      = (tutor.get("bio") or "").lower()
+    tutor_qual     = (tutor.get("qualification") or "").lower()
+    searchable     = " ".join(tutor_subjects) + " " + tutor_bio + " " + tutor_qual
+    for term in terms:
+        term_l = term.lower()
+        # Exact subject match
+        if term_l in tutor_subjects:
+            return True
+        # Partial match inside any subject string
+        if any(term_l in s or s in term_l for s in tutor_subjects):
+            return True
+        # Fallback: term appears anywhere in bio/qualification
+        if term_l in searchable:
+            return True
+    return False
+
+
 @router.get("/search", response_model=PaginatedResponse)
 async def search_tutors(
     subject:        Optional[str]   = Query(None),
@@ -31,7 +124,7 @@ async def search_tutors(
     limit:          int             = Query(12, ge=1, le=50),
     current_user: dict              = Depends(get_current_user),
 ):
-    """Search approved tutors with optional filters."""
+    """Search approved tutors with smart fuzzy + synonym subject matching."""
     sb = get_supabase_admin()
     q  = sb.table("tutors").select(
         "*, profiles!tutors_profile_id_fkey(id, full_name, email, avatar_url, phone)"
@@ -40,8 +133,7 @@ async def search_tutors(
     if available_only:
         q = q.eq("is_available", True)
 
-    if subject:
-        q = q.contains("subjects", [subject])
+    # level and mode are still exact-ish (short lists, students pick from dropdowns)
     if level:
         q = q.contains("levels", [level])
     if mode:
@@ -53,7 +145,12 @@ async def search_tutors(
 
     all_results = q.order("rating", desc=True).execute().data
 
-    # Filter out already assigned tutors for students
+    # Smart subject filter — done in Python after fetch
+    if subject and subject.strip():
+        terms = _subject_terms(subject.strip())
+        all_results = [t for t in all_results if _tutor_matches_subject(t, terms)]
+
+    # Filter out already-assigned tutors for students
     if current_user.get("role") == "student":
         try:
             student = sb.table("students").select("id").eq(
@@ -63,7 +160,7 @@ async def search_tutors(
                 assignments = sb.table("assignments").select("tutor_id").eq(
                     "student_id", student["id"]
                 ).eq("is_active", True).execute().data
-                assigned_tutor_ids = [a["tutor_id"] for a in assignments]
+                assigned_tutor_ids = {a["tutor_id"] for a in assignments}
                 all_results = [t for t in all_results if t["id"] not in assigned_tutor_ids]
         except Exception:
             pass

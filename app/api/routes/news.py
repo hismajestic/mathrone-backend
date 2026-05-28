@@ -343,7 +343,7 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
             category_names = {
                 "news": "Education News",
                 "scholarship": "Scholarships", 
-                "government": "Government Updates",
+                
                 "career": "Career Opportunities",
                 "abroad": "Study Abroad",
                 "resources": "Learning Resources"
