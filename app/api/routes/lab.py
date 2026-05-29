@@ -1,8 +1,14 @@
+import secrets
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from app.core.security import get_current_user, require_admin
 from app.db.supabase import get_supabase_admin
+from app.services.email_service import EmailService
+from datetime import datetime, timezone, timedelta
+import secrets
+from app.db.supabase import get_supabase_admin
+from app.services.email_service import EmailService
 from datetime import datetime, timezone, timedelta
 
 router = APIRouter(prefix="/lab", tags=["Majestic Lab"])
@@ -104,7 +110,6 @@ async def create_token(payload: TokenCreate, current_user: dict = Depends(get_cu
             raise HTTPException(404, "Institution not found.")
 
         if inst.get("expires_at"):
-            from datetime import datetime, timezone
             inst_expires = datetime.fromisoformat(inst["expires_at"].replace("Z", "+00:00"))
             if datetime.now(timezone.utc) > inst_expires:
                 raise HTTPException(403, f"Your institution's subscription has expired. Contact Mathrone to renew.")
@@ -150,9 +155,9 @@ async def create_token(payload: TokenCreate, current_user: dict = Depends(get_cu
         "buyer_name":      payload.buyer_name,
         "amount_paid":     payload.amount_paid,
         "expires_at":      expires_at,
-        "institution_id":  payload.institution_id,
-        "session_id":      payload.session_id,
-        "assignment_id":   payload.assignment_id,  # Link token to assignment
+        "institution_id":  payload.institution_id or None,
+        "session_id":      payload.session_id or None,
+        "assignment_id":   payload.assignment_id or None,
         "created_by":      current_user["id"],
     }
     result = sb.table("lab_tokens").insert(data).execute().data
@@ -199,14 +204,16 @@ async def validate_token(token: str, payload: ValidatePayload):
             sb.table("lab_tokens").update({"device_fingerprint": payload.device_fingerprint}).eq("token", token).execute()
 
     # 4. INSTITUTION PROTECTION (License Seat Management)
-    if record["institution_id"]:
-        inst = record["lab_institutions"]
+    if record.get("institution_id"):
+        inst = record.get("lab_institutions") or {}
+        if not inst:
+            raise HTTPException(500, "Institution metadata is missing for this token. Please contact support.")
         
         # Check if school subscription itself is expired
-        if inst["expires_at"]:
+        if inst.get("expires_at"):
             inst_expires = datetime.fromisoformat(inst["expires_at"].replace("Z", "+00:00"))
             if datetime.now(timezone.utc) > inst_expires:
-                raise HTTPException(403, f"The subscription for {inst['name']} has expired. Please contact your administrator.")
+                raise HTTPException(403, f"The subscription for {inst.get('name','this institution')} has expired. Please contact your administrator.")
 
         # Clean stale sessions before checking limits
         sb.rpc("cleanup_stale_lab_sessions").execute()
@@ -391,9 +398,14 @@ async def create_inst_admin(payload: LinkInstAdminRequest, admin: dict = Depends
     auth_resp = _create_user_via_supabase(payload.email, payload.password, payload.full_name, "institution_admin")
     user_id = auth_resp.user.id
     
-    # 2. Ensure profile exists and has the correct role
+    # 2. Ensure profile exists and set verification state
     _wait_for_profile(sb, user_id)
-    sb.table("profiles").update({"role": "institution_admin", "is_verified": True}).eq("id", user_id).execute()
+    token = secrets.token_urlsafe(32)
+    sb.table("profiles").update({
+        "role": "institution_admin", 
+        "is_verified": False, 
+        "verify_token": token
+    }).eq("id", user_id).execute()
     
     # 3. Link them to the school
     sb.table("institution_admins").insert({
@@ -401,4 +413,21 @@ async def create_inst_admin(payload: LinkInstAdminRequest, admin: dict = Depends
         "institution_id": payload.institution_id
     }).execute()
     
-    return {"message": f"Institution Admin {payload.full_name} created successfully!"}
+    # 4. Send credentials and verification email
+    verify_url = f"https://mathroneacademy.com/verify/{token}"
+    await EmailService.send(
+        payload.email,
+        "Your Mathrone School Admin Account 🏫",
+        EmailService.template(
+            "Welcome to the Majestic Lab!",
+            f"Hi {payload.full_name}, an administrator account has been created for your school.<br><br>"
+            f"<strong>Your Credentials:</strong><br>"
+            f"Email: {payload.email}<br>"
+            f"Password: {payload.password}<br><br>"
+            f"Please verify your email to activate your account and start managing your lab sessions.",
+            verify_url,
+            "Verify & Activate Account →"
+        )
+    )
+    
+    return {"message": f"Institution Admin {payload.full_name} created. Welcome email sent!"}

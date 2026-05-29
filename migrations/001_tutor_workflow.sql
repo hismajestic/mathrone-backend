@@ -9,6 +9,9 @@ ALTER TABLE public.tutors ADD COLUMN IF NOT EXISTS agreement_accepted_at TIMESTA
 
 -- Step 2: Link lab tokens to assignments
 ALTER TABLE public.lab_tokens ADD COLUMN IF NOT EXISTS assignment_id UUID REFERENCES public.assignments(id) ON DELETE SET NULL;
+ALTER TABLE public.lab_tokens ALTER COLUMN institution_id DROP NOT NULL;
+ALTER TABLE public.lab_tokens ALTER COLUMN assignment_id DROP NOT NULL;
+ALTER TABLE public.lab_tokens ALTER COLUMN session_id DROP NOT NULL;
 
 -- Step 3: Create index for better query performance
 CREATE INDEX IF NOT EXISTS idx_lab_tokens_assignment ON public.lab_tokens(assignment_id);
