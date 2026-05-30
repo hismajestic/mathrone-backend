@@ -165,9 +165,12 @@ async def register_student(payload: RegisterStudentRequest):
     payload.email = payload.email.strip().lower()
     sb = get_supabase_admin()
 
+    # Force phone metadata into auth user
     auth_resp = _create_user_via_supabase(
         payload.email, payload.password, payload.full_name, "student"
     )
+    # Update profile with phone immediately
+    sb.table("profiles").update({"phone": payload.phone}).eq("id", auth_resp.user.id).execute()
 
     user_id = getattr(auth_resp.user, "id", None)
     if not user_id:
