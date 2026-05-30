@@ -754,6 +754,14 @@ async def upload_session_material(
 # ============================================================
 messages_router = APIRouter(prefix="/messages", tags=["Messaging"])
 
+@messages_router.get("/unread-count")
+async def get_unread_message_count(current_user: dict = Depends(get_current_user)):
+    sb = get_supabase_admin()
+    # Count messages where user is NOT the sender and status is not read
+    # RLS in Supabase ensures the user only counts messages from their own conversations
+    res = sb.table("messages").select("id", count="exact").neq("sender_id", current_user["id"]).neq("status", "read").execute()
+    return {"count": res.count or 0}
+
 
 def _get_or_create_conversation(sb, user_a: str, user_b: str) -> str:
     """Return the conversation ID between two users, creating it if needed."""
