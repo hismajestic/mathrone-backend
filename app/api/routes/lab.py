@@ -28,9 +28,12 @@ class TokenCreate(BaseModel):
     buyer_name: str
     amount_paid: Optional[float] = None
     hours: int = 24
-    institution_id: Optional[str] = None  # None = individual guest
-    session_id: Optional[str] = None      # Tutor's active lab session ID for real-time sync
-    assignment_id: Optional[str] = None   # Assignment ID (for tutor-student pair validation)
+    institution_id: Optional[str] = None
+    session_id: Optional[str] = None
+    assignment_id: Optional[str] = None
+
+class BulkDeleteRequest(BaseModel):
+    token_ids: list[str]   
 
 class ValidatePayload(BaseModel):
     device_fingerprint: str
@@ -366,23 +369,40 @@ async def get_my_institution_tokens(current_user: dict = Depends(get_current_use
 
 
 @router.delete("/my-institution/tokens/{token_id}")
-async def revoke_my_token(token_id: str, current_user: dict = Depends(get_current_user)):
-    """Institution admin can revoke their own tokens only."""
-    if current_user.get("role") not in ("admin", "institution_admin"):
+async def delete_my_token(token_id: str, current_user: dict = Depends(get_current_user)):
+    """Institution admin deletes the record permanently."""
+    if current_user.get("role") != "institution_admin":
         raise HTTPException(403, "Not authorized")
     sb = get_supabase_admin()
+    membership = sb.table("institution_admins").select("institution_id").eq("profile_id", current_user["id"]).single().execute().data
+    
+    # Target specific ID and Institution to ensure security
+    sb.table("lab_tokens").delete().eq("id", token_id).eq("institution_id", membership["institution_id"]).execute()
+    return {"message": "Record deleted"}
 
-    if current_user.get("role") == "institution_admin":
-        membership = sb.table("institution_admins").select("institution_id").eq(
-            "profile_id", current_user["id"]
-        ).single().execute().data
-        # Verify this token belongs to their institution before revoking
-        token_rec = sb.table("lab_tokens").select("institution_id").eq("id", token_id).single().execute().data
-        if not token_rec or token_rec["institution_id"] != membership["institution_id"]:
-            raise HTTPException(403, "This token does not belong to your institution.")
+@router.post("/my-institution/tokens/bulk-delete")
+async def bulk_delete_tokens(payload: BulkDeleteRequest, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "institution_admin":
+        raise HTTPException(403, "Not authorized")
+    sb = get_supabase_admin()
+    membership = sb.table("institution_admins").select("institution_id").eq("profile_id", current_user["id"]).single().execute().data
+    sb.table("lab_tokens").delete().in_("id", payload.token_ids).eq("institution_id", membership["institution_id"]).execute()
+    return {"message": "Selected records deleted"}
 
-    sb.table("lab_tokens").update({"is_revoked": True}).eq("id", token_id).execute()
-    return {"message": "Token revoked"}
+@router.patch("/my-institution/tokens/{token_id}/renew")
+async def renew_token(token_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "institution_admin":
+        raise HTTPException(403, "Not authorized")
+    sb = get_supabase_admin()
+    membership = sb.table("institution_admins").select("institution_id").eq("profile_id", current_user["id"]).single().execute().data
+    hours = payload.get("hours", 8)
+    new_expiry = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    sb.table("lab_tokens").update({
+        "expires_at": new_expiry, 
+        "is_revoked": False, 
+        "device_fingerprint": None 
+    }).eq("id", token_id).eq("institution_id", membership["institution_id"]).execute()
+    return {"message": "Token renewed"}
 class LinkInstAdminRequest(BaseModel):
     email: str
     password: str
@@ -431,3 +451,44 @@ async def create_inst_admin(payload: LinkInstAdminRequest, admin: dict = Depends
     )
     
     return {"message": f"Institution Admin {payload.full_name} created. Welcome email sent!"}
+@router.patch("/my-institution/tokens/{token_id}/renew")
+async def renew_token(
+    token_id: str, 
+    payload: dict, # {"hours": int}
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user.get("role") != "institution_admin":
+        raise HTTPException(403, "Unauthorized")
+    
+    sb = get_supabase_admin()
+    # Security: Verify ownership
+    membership = sb.table("institution_admins").select("institution_id").eq("profile_id", current_user["id"]).single().execute().data
+    token_rec = sb.table("lab_tokens").select("institution_id").eq("id", token_id).single().execute().data
+    
+    if not token_rec or token_rec["institution_id"] != membership["institution_id"]:
+        raise HTTPException(403, "Access denied")
+
+    hours = payload.get("hours", 8)
+    new_expiry = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    
+    sb.table("lab_tokens").update({
+        "expires_at": new_expiry,
+        "is_revoked": False,
+        "device_fingerprint": None # Reset device lock on renewal
+    }).eq("id", token_id).execute()
+    
+    return {"message": "Token renewed successfully", "expires_at": new_expiry}
+
+# Change the behavior of the existing DELETE endpoint to actually REMOVE the record
+# Search for @router.delete("/my-institution/tokens/{token_id}") and replace it:
+@router.delete("/my-institution/tokens/{token_id}")
+async def delete_my_token(token_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "institution_admin":
+        raise HTTPException(403, "Unauthorized")
+    
+    sb = get_supabase_admin()
+    membership = sb.table("institution_admins").select("institution_id").eq("profile_id", current_user["id"]).single().execute().data
+    
+    # Delete instead of just revoking to "clean" the dashboard
+    sb.table("lab_tokens").delete().eq("id", token_id).eq("institution_id", membership["institution_id"]).execute()
+    return {"message": "Record removed from dashboard"}
