@@ -465,3 +465,22 @@ def upgrade_to_student(req: StudentUpgradeRequest, user=Depends(get_current_user
         "preferred_mode": req.preferred_mode
     }).execute()
     return {"message": "Account upgraded to student successfully"}
+class HeartbeatPayload(BaseModel):
+    lesson_id: str
+    seconds: int
+
+@router.post("/analytics/heartbeat")
+async def course_heartbeat(payload: HeartbeatPayload, user=Depends(get_current_user)):
+    sb = get_supabase_admin()
+    
+    # Atomic increment of time_spent in the lesson_progress table
+    # Requires a PostgreSQL function 'increment_time_spent' in Supabase
+    try:
+        sb.rpc("increment_student_time", {
+            "p_student_id": user["id"],
+            "p_lesson_id": payload.lesson_id,
+            "p_seconds": payload.seconds
+        }).execute()
+        return {"status": "recorded"}
+    except Exception:
+        return {"status": "skipped"}
