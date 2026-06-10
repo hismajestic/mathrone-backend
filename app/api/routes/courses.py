@@ -444,6 +444,74 @@ def test_auth_creation(phone: str, admin=Depends(require_admin)):
 
     return result
 
+# ── Admin: Course Analytics ───────────────────────────────────────────────────
+@router.get("/admin/analytics")
+def get_course_analytics(admin=Depends(require_admin)):
+    sb = get_supabase_admin()
+
+    # All published courses
+    courses = sb.table("courses").select("id, title, subject, level, price, curriculum, is_published, created_at").execute().data or []
+
+    # All enrollments
+    enrollments = sb.table("course_enrollments").select("course_id, student_id").execute().data or []
+
+    # All lesson progress rows with time_spent
+    lesson_progress = sb.table("lesson_progress").select("course_id, student_id, completed, time_spent").execute().data or []
+
+    # All lessons (to get total per course)
+    all_lessons = sb.table("course_lessons").select("id, course_id").execute().data or []
+
+    # Approved orders only (for revenue)
+    orders = sb.table("course_orders").select("course_id, status, created_at").eq("status", "approved").execute().data or []
+
+    # Build per-course map
+    from collections import defaultdict
+    enroll_map   = defaultdict(set)   # course_id -> set of student_ids
+    revenue_map  = defaultdict(int)   # course_id -> approved order count
+    lessons_map  = defaultdict(int)   # course_id -> total lesson count
+    completed_map = defaultdict(int)  # course_id -> completed lesson rows
+    time_map     = defaultdict(int)   # course_id -> total seconds spent
+
+    for e in enrollments:
+        enroll_map[e["course_id"]].add(e["student_id"])
+
+    for o in orders:
+        revenue_map[o["course_id"]] += 1
+
+    for l in all_lessons:
+        lessons_map[l["course_id"]] += 1
+
+    for p in lesson_progress:
+        cid = p.get("course_id")
+        if cid:
+            if p.get("completed"):
+                completed_map[cid] += 1
+            time_map[cid] += p.get("time_spent") or 0
+
+    result = []
+    for c in courses:
+        cid = c["id"]
+        enrolled = len(enroll_map[cid])
+        total_lessons = lessons_map[cid]
+        completed_lessons = completed_map[cid]
+        completion_rate = round((completed_lessons / (enrolled * total_lessons) * 100), 1) if enrolled and total_lessons else 0
+        avg_time_mins = round(time_map[cid] / 60 / max(enrolled, 1), 1) if enrolled else 0
+
+        result.append({
+            **c,
+            "enrolled_count":    enrolled,
+            "completion_rate":   completion_rate,
+            "avg_time_mins":     avg_time_mins,
+            "total_time_hours":  round(time_map[cid] / 3600, 1),
+            "paid_orders":       revenue_map[cid],
+            "revenue_rwf":       revenue_map[cid] * (c.get("price") or 0),
+        })
+
+    # Sort by enrolled_count desc
+    result.sort(key=lambda x: x["enrolled_count"], reverse=True)
+    return result
+
+
 # ── Course-guest account upgrade to full student ──────────────────────────────
 class StudentUpgradeRequest(BaseModel):
     full_name: str
