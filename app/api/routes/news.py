@@ -367,7 +367,7 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
                     EmailService.template(
                         title=f"New {category_display} Article",
                         body=body,
-                        action_url=f"https://mathroneacademy.com/news/{new_post.get('slug') or new_post['id']}",
+                        action_url=f"https://mathroneacademy.com/news/{new_post.get('category', 'education')}/{new_post.get('slug') or new_post['id']}",
                         action_label="Read Article"
                     )
                 ))
