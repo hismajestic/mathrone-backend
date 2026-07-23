@@ -1,3 +1,4 @@
+import re
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional, List, Any
 from datetime import datetime, date
@@ -52,6 +53,16 @@ class RegisterStudentRequest(BaseModel):
     parent_phone:    Optional[str] = None
     category: Optional[str] = 'academic'
 
+    @field_validator('phone', 'parent_phone', mode='before')
+    @classmethod
+    def validate_phone_country_code(cls, v):
+        if v is None or (isinstance(v, str) and v.strip() == ''):
+            return v
+        normalized = v.strip()
+        if not re.match(r'^\+\d[\d\s-]{6,}$', normalized):
+            raise ValueError('Phone number must include country code and start with +')
+        return normalized
+
 
 class RegisterTutorRequest(BaseModel):
     full_name:         str
@@ -61,6 +72,16 @@ class RegisterTutorRequest(BaseModel):
     subjects:          List[str]
     levels:            List[str]
     teaching_modes:    List[str]        # ['online','home']
+
+    @field_validator('phone', mode='before')
+    @classmethod
+    def validate_phone_country_code(cls, v):
+        if v is None or (isinstance(v, str) and v.strip() == ''):
+            return v
+        normalized = v.strip()
+        if not re.match(r'^\+\d[\d\s-]{6,}$', normalized):
+            raise ValueError('Phone number must include country code and start with +')
+        return normalized
     experience_years:  int
     experience_desc:   Optional[str] = None
     qualification:     str

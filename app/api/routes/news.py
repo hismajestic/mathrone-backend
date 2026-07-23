@@ -350,12 +350,17 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
             }
             category_display = category_names.get(payload.category, payload.category.title())
             
-            subject = f"📰 New {category_display} - {payload.title}"
+            article_url = f"https://mathroneacademy.com/news/{('education' if payload.category == 'news' or not payload.category else payload.category)}/{new_post.get('slug') or new_post['id']}"
+            subject = f" New {category_display} - {payload.title}"
             body = f"""
             <p>We've published a new article that might interest you:</p>
             <h3>{payload.title}</h3>
             <p><strong>Category:</strong> {category_display}</p>
             <p>{payload.content[:200]}{'...' if len(payload.content) > 200 else ''}</p>
+            <p style='margin-top:20px;'>
+              <a href='{article_url}' style='display:inline-block;padding:12px 22px;background:#1A5FFF;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;'>Read Article</a>
+            </p>
+            <p style='margin-top:18px;font-size:13px;color:#666;'>If the button does not render correctly, open this link:<br><a href='{article_url}' style='color:#1A5FFF;text-decoration:none;'>{article_url}</a></p>
             """
             
             # Send emails asynchronously
@@ -367,7 +372,7 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
                     EmailService.template(
                         title=f"New {category_display} Article",
                         body=body,
-                        action_url=f"https://mathroneacademy.com/news/{new_post.get('category', 'education')}/{new_post.get('slug') or new_post['id']}",
+                        action_url=article_url,
                         action_label="Read Article"
                     )
                 ))
