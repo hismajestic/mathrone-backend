@@ -357,10 +357,7 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
             <h3>{payload.title}</h3>
             <p><strong>Category:</strong> {category_display}</p>
             <p>{payload.content[:200]}{'...' if len(payload.content) > 200 else ''}</p>
-            <p style='margin-top:20px;'>
-              <a href='{article_url}' style='display:inline-block;padding:12px 22px;background:#1A5FFF;color:#fff;text-decoration:none;border-radius:8px;font-weight:700;'>Read Article</a>
-            </p>
-            <p style='margin-top:18px;font-size:13px;color:#666;'>If the button does not render correctly, open this link:<br><a href='{article_url}' style='color:#1A5FFF;text-decoration:none;'>{article_url}</a></p>
+            <p style='margin-top:18px;font-size:13px;color:#666;'>If the button below does not render, open this link directly:<br><a href='{article_url}' style='color:#1A5FFF;text-decoration:none;'>{article_url}</a></p>
             """
             
             # Send emails asynchronously

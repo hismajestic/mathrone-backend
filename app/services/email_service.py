@@ -54,5 +54,5 @@ class EmailService:
         )
         return (
             f"<html><body style='font-family:sans-serif;padding:20px;'>"
-            f"<h2>{title}</h2><p>{body}</p>{btn}</body></html>"
+            f"<h2>{title}</h2>{body}{btn}</body></html>"
         )

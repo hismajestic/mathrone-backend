@@ -50,7 +50,7 @@ async def create_tutoring_request(
     payload: TutoringRequestCreate,
     current_user: dict = Depends(get_current_user),
 ):
-    """Student submits a tutoring request; admin assigns a tutor."""
+    """Student/parent submits a tutor request with criteria; admin finds and assigns."""
     sb = get_supabase_admin()
     try:
         student = sb.table("students").select("id").eq(
@@ -59,39 +59,39 @@ async def create_tutoring_request(
     except Exception:
         raise HTTPException(404, "Student profile not found")
 
-    # Check if student already has an active assignment for this subject
-    active_assignment = sb.table("assignments").select("id").eq(
+    # Check for a duplicate pending request (same subjects + curriculum)
+    pending = sb.table("tutoring_requests").select("id").eq(
         "student_id", student["id"]
-    ).eq("subject", payload.subject).eq("is_active", True).execute().data
-    if active_assignment:
-        raise HTTPException(400, f"You already have an active tutor for {payload.subject}.")
+    ).eq("curriculum", payload.curriculum).eq("status", "pending").execute().data
+    if pending:
+        raise HTTPException(400, "You already have a pending request for this curriculum. Please wait for admin to respond.")
 
-    # Check if student already has a pending request for this subject
-    pending_request = sb.table("tutoring_requests").select("id").eq(
-        "student_id", student["id"]
-    ).eq("subject", payload.subject).eq("status", "pending").execute().data
-    if pending_request:
-        raise HTTPException(400, f"You already have a pending request for {payload.subject}. Please wait for admin to assign a tutor.")
+    budget_display = f"{payload.currency} {payload.max_budget:.2f}" if payload.max_budget else "Not specified"
+    subjects_str   = ", ".join(payload.subjects)
 
     result = sb.table("tutoring_requests").insert({
         "student_id":     student["id"],
-        "subject":        payload.subject,
+        "subject":        subjects_str,          # keep existing column, store joined list
+        "curriculum":     payload.curriculum,
         "level":          payload.level,
         "mode":           payload.mode.value,
+        "max_budget":     payload.max_budget,
+        "currency":       payload.currency,
         "preferred_days": payload.preferred_days,
         "preferred_time": payload.preferred_time,
         "home_location":  payload.home_location,
         "notes":          payload.notes,
     }).execute()
 
-    # Notify admins
+    # Notify all admins in-app
     admins = sb.table("profiles").select("id").eq("role", "admin").execute().data or []
     for admin in admins:
         await NotificationService.create(
             admin["id"], "general",
-            "New Tutoring Request",
-            f"{current_user['full_name']} needs a {payload.subject} tutor "
-            f"({payload.level}, {payload.mode.value})",
+            "New Tutor Request 📌",
+            f"{current_user['full_name']} is looking for a {subjects_str} tutor "
+            f"({payload.curriculum}, {payload.level}, {payload.mode.value}) "
+            f"— Budget: {budget_display}",
             sb,
         )
 
@@ -204,7 +204,7 @@ async def list_all_requests(
 ):
     sb = get_supabase_admin()
     q  = sb.table("tutoring_requests").select(
-        "*, students(id, school_level, profiles!students_profile_id_fkey(full_name, email))"
+        "*, students(id, school_level, profiles!students_profile_id_fkey(full_name, email, phone))"
     )
     if status:
         q = q.eq("status", status)

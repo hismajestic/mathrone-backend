@@ -181,9 +181,12 @@ class StudentUpdate(BaseModel):
 
 # ── Tutoring Request ───────────────────────────────────────────────────────────
 class TutoringRequestCreate(BaseModel):
-    subject:        str
+    subjects:       List[str]                  # e.g. ["Mathematics", "Physics"]
+    curriculum:     str                        # e.g. "CBC", "IGCSE", "A-Level", "IB", "AP"
     level:          str
     mode:           SessionMode
+    max_budget:     Optional[float] = None     # max per session
+    currency:       str = "USD"                # USD default; also RWF, GBP, EUR, etc.
     preferred_days: List[str] = []
     preferred_time: Optional[str] = None
     home_location:  Optional[str] = None
