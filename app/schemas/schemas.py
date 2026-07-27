@@ -69,9 +69,17 @@ class RegisterTutorRequest(BaseModel):
     email:             EmailStr
     phone:             Optional[str] = None
     password:          str
+    category:          str = "academic"  # "academic" or "professional"
     subjects:          List[str]
-    levels:            List[str]
+    levels:             List[str]
     teaching_modes:    List[str]        # ['online','home']
+
+    @field_validator('category')
+    @classmethod
+    def validate_tutor_category(cls, v):
+        if v not in ('academic', 'professional'):
+            raise ValueError("category must be 'academic' or 'professional'")
+        return v
 
     @field_validator('phone', mode='before')
     @classmethod
@@ -128,6 +136,7 @@ class ProfileOut(BaseModel):
 # ── Tutor ──────────────────────────────────────────────────────────────────────
 class TutorUpdate(BaseModel):
     bio:              Optional[str] = None
+    category:         Optional[str] = None
     subjects:         Optional[List[str]] = None
     levels:           Optional[List[str]] = None
     teaching_modes:   Optional[List[str]] = None
@@ -181,9 +190,10 @@ class StudentUpdate(BaseModel):
 
 # ── Tutoring Request ───────────────────────────────────────────────────────────
 class TutoringRequestCreate(BaseModel):
-    subjects:       List[str]                  # e.g. ["Mathematics", "Physics"]
-    curriculum:     str                        # e.g. "CBC", "IGCSE", "A-Level", "IB", "AP"
-    level:          str
+    category:       str = "academic"           # "academic" or "professional"
+    subjects:       List[str]                  # e.g. ["Mathematics", "Physics"] or ["Excel", "Public Speaking"]
+    curriculum:     str                        # e.g. "CBC", "IGCSE", "A-Level", "IB", "AP" — or skill/field name for professional
+    level:          str                        # e.g. "Primary" — or "Beginner"/"Intermediate"/"Advanced" for professional
     mode:           SessionMode
     max_budget:     Optional[float] = None     # max per session
     currency:       str = "USD"                # USD default; also RWF, GBP, EUR, etc.
@@ -191,6 +201,13 @@ class TutoringRequestCreate(BaseModel):
     preferred_time: Optional[str] = None
     home_location:  Optional[str] = None
     notes:          Optional[str] = None
+
+    @field_validator('category')
+    @classmethod
+    def validate_category(cls, v):
+        if v not in ('academic', 'professional'):
+            raise ValueError("category must be 'academic' or 'professional'")
+        return v
 
 
 class TutoringRequestAssign(BaseModel):

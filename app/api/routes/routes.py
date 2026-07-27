@@ -64,13 +64,14 @@ async def create_tutoring_request(
         "student_id", student["id"]
     ).eq("curriculum", payload.curriculum).eq("status", "pending").execute().data
     if pending:
-        raise HTTPException(400, "You already have a pending request for this curriculum. Please wait for admin to respond.")
+        raise HTTPException(400, "You already have a pending request for this subject/skill. Please wait for admin to respond.")
 
     budget_display = f"{payload.currency} {payload.max_budget:.2f}" if payload.max_budget else "Not specified"
     subjects_str   = ", ".join(payload.subjects)
 
     result = sb.table("tutoring_requests").insert({
         "student_id":     student["id"],
+        "category":       payload.category,
         "subject":        subjects_str,          # keep existing column, store joined list
         "curriculum":     payload.curriculum,
         "level":          payload.level,
@@ -89,7 +90,7 @@ async def create_tutoring_request(
         await NotificationService.create(
             admin["id"], "general",
             "New Tutor Request 📌",
-            f"{current_user['full_name']} is looking for a {subjects_str} tutor "
+            f"{current_user['full_name']} is looking for a {subjects_str} {payload.category} tutor "
             f"({payload.curriculum}, {payload.level}, {payload.mode.value}) "
             f"— Budget: {budget_display}",
             sb,

@@ -441,7 +441,7 @@ async def list_all_tutors(admin = Depends(require_admin)):
     """Admin: list all tutors (all statuses)."""
     sb = get_supabase_admin()
     return sb.table("tutors").select(
-        "id, profile_id, status, subjects, levels, rating, total_sessions, created_at, "
+        "id, profile_id, status, category, subjects, levels, rating, total_sessions, created_at, "
         "profiles!tutors_profile_id_fkey(id, full_name, email, phone)"
     ).order("created_at", desc=True).execute().data
 
