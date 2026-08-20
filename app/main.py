@@ -1,6 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from collections import defaultdict
+import time
 from app.api.routes.news import router as news_router
 from app.api.routes.exam import router as exam_router
 from app.api.routes.shop import router as shop_router
@@ -63,8 +66,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# GZip compression — reduces API response size by ~70%
-from fastapi.middleware.gzip import GZipMiddleware
+# ── Simple in-memory rate limiter ─────────────────────────────────────────────
+# Limits abusive IPs on public endpoints without requiring Redis
+_rate_store: dict = defaultdict(list)
+RATE_LIMIT_WINDOW = 60   # seconds
+RATE_LIMIT_MAX    = 20   # max requests per window per IP
+
+RATE_LIMITED_PATHS = {
+    "/api/v1/news/subscribe",
+    "/api/v1/news/public/upload-proof",
+    "/api/v1/auth/contact",
+}
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path in RATE_LIMITED_PATHS:
+        ip = request.headers.get("CF-Connecting-IP") or request.client.host
+        now = time.time()
+        window_start = now - RATE_LIMIT_WINDOW
+        hits = _rate_store[ip] = [t for t in _rate_store[ip] if t > window_start]
+        if len(hits) >= RATE_LIMIT_MAX:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Please try again later."}
+            )
+        _rate_store[ip].append(now)
+    return await call_next(request)
+
+
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # ── Routes ─────────────────────────────────────────────────────────────────────

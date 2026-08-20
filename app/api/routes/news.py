@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Request
 from pydantic import BaseModel
 from typing import Optional
 from app.core.security import get_current_user, require_admin
@@ -24,6 +24,18 @@ def generate_description(content: str, max_length: int = 300) -> str:
     if len(description) > max_length:
         description = description[:max_length-3] + '...'
     return description
+
+SUPABASE_STORAGE_PATTERN = re.compile(
+    r'https?://[^/]+\.supabase\.co/storage/v1/object/public/([^"\s>]+)',
+    re.IGNORECASE
+)
+
+def rewrite_storage_urls(content: str) -> str:
+    """Replace direct Supabase storage URLs with Cloudflare-proxied URLs"""
+    return SUPABASE_STORAGE_PATTERN.sub(
+        lambda m: f"https://mathroneacademy.com/storage/{m.group(1)}",
+        content
+    )
 
 def generate_tags(content: str, title: str = "", max_tags: int = 5) -> list[str]:
     """Generate relevant tags from article content and title"""
@@ -230,7 +242,8 @@ async def upload_payment_proof(file: UploadFile = File(...)):
             file=file_bytes,
             file_options={"content-type": file.content_type}
         )
-        url = sb.storage.from_("news-images").get_public_url(filename)
+        raw_url = sb.storage.from_("news-images").get_public_url(filename)
+        url = rewrite_storage_urls(raw_url)
         return {"url": url}
     except Exception as e:
         raise HTTPException(500, f"Upload failed: {str(e)}")
@@ -256,7 +269,7 @@ async def get_news(
         query = query.eq("is_featured", featured)
     
     if search:
-        query = query.or_(f"title.ilike.%{search}%,content.ilike.%{search}%")
+        query = query.or_(f"title.ilike.%{search}%,description.ilike.%{search}%")
     
     if popular:
         query = query.order("views_count", desc=True)
@@ -268,42 +281,34 @@ async def get_news(
 
 # ── Get single news post ───────────────────────────────────────────────────────
 @router.get("/{post_id}")
-async def get_news_post(post_id: str):
+async def get_news_post(post_id: str, request: Request):
     sb = get_supabase_admin()
     try:
-        # Get current views count first
-        current_post = sb.table("news_posts").select("views_count").eq("id", post_id).single().execute().data
-        if not current_post:
+        post = sb.table("news_posts").select("*").eq("id", post_id).single().execute().data
+        if not post:
             raise HTTPException(404, "Post not found")
-        
-        # Increment views
-        new_views = (current_post["views_count"] or 0) + 1
-        sb.table("news_posts").update({"views_count": new_views}).eq("id", post_id).execute()
-        
-        return sb.table("news_posts").select(
-            "*"
-        ).eq("id", post_id).single().execute().data
+        # Only increment views for real browsers, not bots/crawlers
+        ua = request.headers.get("user-agent", "").lower()
+        is_bot = any(b in ua for b in ["bot", "crawler", "spider", "googlebot", "bingbot", "facebookexternalhit", "whatsapp", "telegram", "slackbot"])
+        if not is_bot:
+            sb.rpc("increment_views", {"post_id": post_id}).execute()
+        return post
     except Exception:
         raise HTTPException(404, "Post not found")
 
 # ── Get news post by slug ─────────────────────────────────────────────────────
 @router.get("/by-slug/{slug}")
-async def get_news_post_by_slug(slug: str):
-    
+async def get_news_post_by_slug(slug: str, request: Request):
     sb = get_supabase_admin()
     try:
-        # Get current views count first
-        current_post = sb.table("news_posts").select("views_count").eq("slug", slug).single().execute().data
-        if not current_post:
+        post = sb.table("news_posts").select("*").eq("slug", slug).single().execute().data
+        if not post:
             raise HTTPException(404, "Post not found")
-        
-        # Increment views
-        new_views = (current_post["views_count"] or 0) + 1
-        sb.table("news_posts").update({"views_count": new_views}).eq("slug", slug).execute()
-        
-        return sb.table("news_posts").select(
-            "*"
-        ).eq("slug", slug).single().execute().data
+        ua = request.headers.get("user-agent", "").lower()
+        is_bot = any(b in ua for b in ["bot", "crawler", "spider", "googlebot", "bingbot", "facebookexternalhit", "whatsapp", "telegram", "slackbot"])
+        if not is_bot:
+            sb.rpc("increment_views", {"post_id": post["id"]}).execute()
+        return post
     except Exception:
         raise HTTPException(404, "Post not found")
 
@@ -321,7 +326,7 @@ async def create_news(payload: NewsCreate, admin: dict = Depends(require_admin))
     
     result = sb.table("news_posts").insert({
         "title":        payload.title,
-        "content":      payload.content,
+        "content":      rewrite_storage_urls(payload.content),
         "category":     payload.category,
         "tags":         tags,
         "image_url":    payload.image_url,
@@ -394,7 +399,7 @@ async def update_news(post_id: str, payload: NewsCreate, admin: dict = Depends(r
     
     result = sb.table("news_posts").update({
         "title":        payload.title,
-        "content":      payload.content,
+        "content":      rewrite_storage_urls(payload.content),
         "category":     payload.category,
         "tags":         tags,
         "image_url":    payload.image_url,
@@ -489,11 +494,11 @@ async def upload_news_image(
         img = img.convert("RGB")
 
     # 3. Smart Resize (Max 1200px width/height while keeping aspect ratio)
-    img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+    img.thumbnail((900, 900), Image.Resampling.LANCZOS)
 
     # 4. Compress and Save to a buffer
     output = io.BytesIO()
-    img.save(output, format="JPEG", quality=85, optimize=True)
+    img.save(output, format="JPEG", quality=75, optimize=True)
     output.seek(0)
 
     # 5. Upload to Supabase
@@ -504,7 +509,8 @@ async def upload_news_image(
         file_options={"content-type": "image/jpeg", "upsert": "true"}
     )
     
-    url = sb.storage.from_("news-images").get_public_url(path)
+    raw_url = sb.storage.from_("news-images").get_public_url(path)
+    url = rewrite_storage_urls(raw_url)
     return {"url": url}
 from fastapi.responses import HTMLResponse
 
