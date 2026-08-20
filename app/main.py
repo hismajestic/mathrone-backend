@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 from collections import defaultdict
 import time
@@ -127,7 +128,4 @@ async def root():
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "healthy"}
-@app.get("/api/v1/health")
-def health():
-    return {"ok": True, "service": "mathrone-backend"}
+    return {"status": "healthy", "ok": True, "service": "mathrone-backend"}
