@@ -247,7 +247,7 @@ async def get_news(
 ):
     sb = get_supabase_admin()
     query = sb.table("news_posts").select(
-        "*"
+        "id, title, slug, category, image_url, description, is_featured, views_count, created_at"
     )
     
     if category:
