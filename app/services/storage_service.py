@@ -3,6 +3,18 @@ from app.db.supabase import get_supabase_admin
 from app.core.config import settings
 import uuid
 import os
+import re
+
+_SUPABASE_URL_RE = re.compile(
+    r'https?://[^/]+\.supabase\.co/storage/v1/object/public/([^"\s>]+)',
+    re.IGNORECASE
+)
+
+def rewrite_storage_url(url: str) -> str:
+    return _SUPABASE_URL_RE.sub(
+        lambda m: f"https://mathroneacademy.com/storage/{m.group(1)}",
+        url
+    )
 
 
 class StorageService:
@@ -34,7 +46,7 @@ class StorageService:
         except Exception as e:
             raise HTTPException(500, f"Upload failed: {str(e)}")
 
-        return sb.storage.from_(bucket).get_public_url(path)
+        return rewrite_storage_url(sb.storage.from_(bucket).get_public_url(path))
 
     @staticmethod
     async def upload_cv(file: UploadFile, user_id: str) -> str:

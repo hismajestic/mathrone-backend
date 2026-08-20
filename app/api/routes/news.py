@@ -25,17 +25,7 @@ def generate_description(content: str, max_length: int = 300) -> str:
         description = description[:max_length-3] + '...'
     return description
 
-SUPABASE_STORAGE_PATTERN = re.compile(
-    r'https?://[^/]+\.supabase\.co/storage/v1/object/public/([^"\s>]+)',
-    re.IGNORECASE
-)
-
-def rewrite_storage_urls(content: str) -> str:
-    """Replace direct Supabase storage URLs with Cloudflare-proxied URLs"""
-    return SUPABASE_STORAGE_PATTERN.sub(
-        lambda m: f"https://mathroneacademy.com/storage/{m.group(1)}",
-        content
-    )
+from app.services.storage_service import rewrite_storage_url as rewrite_storage_urls
 
 def generate_tags(content: str, title: str = "", max_tags: int = 5) -> list[str]:
     """Generate relevant tags from article content and title"""

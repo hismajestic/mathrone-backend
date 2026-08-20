@@ -7,6 +7,7 @@ import string
 
 from app.db.supabase import get_supabase, get_supabase_admin
 from app.core.security import get_current_user, require_admin
+from app.services.storage_service import rewrite_storage_url
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
 
@@ -256,7 +257,7 @@ async def upload_course_image(file: UploadFile = File(...), admin=Depends(requir
                     raise fallback_e
 
         await asyncio.to_thread(do_upload)
-        url = sb.storage.from_("assets").get_public_url(filename)
+        url = rewrite_storage_url(sb.storage.from_("assets").get_public_url(filename))
         return {"url": url}
         
     except Exception as e:
@@ -291,7 +292,7 @@ async def upload_course_resource(file: UploadFile = File(...), admin=Depends(req
             file=file_bytes,
             file_options={"content-type": file.content_type}
         )
-        url = sb.storage.from_("assets").get_public_url(filename)
+        url = rewrite_storage_url(sb.storage.from_("assets").get_public_url(filename))
         return {"url": url, "filename": file.filename}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

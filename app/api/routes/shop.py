@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from app.core.security import get_current_user, require_admin
 from app.db.supabase import get_supabase_admin
+from app.services.storage_service import rewrite_storage_url
 from pydantic import BaseModel
 from typing import Optional, List
 import uuid
@@ -365,7 +366,7 @@ async def upload_product_image(
             file_options={"content-type": content_type, "upsert": "true"}
         )
     )
-    url = sb.storage.from_("product-images").get_public_url(path)
+    url = rewrite_storage_url(sb.storage.from_("product-images").get_public_url(path))
     return {"url": url}
 
 @router.post("/products/admin/upload-extra-image")
@@ -388,7 +389,7 @@ async def upload_extra_image(
             file_options={"content-type": content_type, "upsert": "true"}
         )
     )
-    url = sb.storage.from_("product-images").get_public_url(path)
+    url = rewrite_storage_url(sb.storage.from_("product-images").get_public_url(path))
     return {"url": url}
 
 @router.delete("/products/admin/delete-image")

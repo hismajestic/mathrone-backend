@@ -477,18 +477,11 @@ async def upload_tutor_docs(
     tutor_id = tutor["id"]
 
     # Upload CV to storage
+    from app.services.storage_service import rewrite_storage_url
     cv_bytes = await cv.read()
     cv_path = f"tutors/{uid}/cv_{cv.filename}"
     sb.storage.from_("documents").upload(cv_path, cv_bytes, {"content-type": cv.content_type, "upsert": "true"})
-    cv_url = sb.storage.from_("documents").get_public_url(cv_path)
-
-    # Save CV to documents table
-    sb.table("documents").upsert({
-        "tutor_id":  tutor_id,
-        "file_name": cv.filename,
-        "file_type": "cv",
-        "file_url":  cv_url
-    }, on_conflict="tutor_id,file_type" if False else None).execute()
+    cv_url = rewrite_storage_url(sb.storage.from_("documents").get_public_url(cv_path))
 
     # Delete old CV record and insert new one
     sb.table("documents").delete().eq("tutor_id", tutor_id).eq("file_type", "cv").execute()
@@ -504,7 +497,7 @@ async def upload_tutor_docs(
         cert_bytes = await cert.read()
         cert_path = f"tutors/{uid}/cert_{cert.filename}"
         sb.storage.from_("documents").upload(cert_path, cert_bytes, {"content-type": cert.content_type, "upsert": "true"})
-        cert_url = sb.storage.from_("documents").get_public_url(cert_path)
+        cert_url = rewrite_storage_url(sb.storage.from_("documents").get_public_url(cert_path))
         sb.table("documents").insert({
             "tutor_id":  tutor_id,
             "file_name": cert.filename,
@@ -556,7 +549,8 @@ async def upload_avatar(
         path, contents,
         file_options={"content-type": file.content_type, "upsert": "true"}
     )
-    url = sb.storage.from_("avatars").get_public_url(path)
+    from app.services.storage_service import rewrite_storage_url
+    url = rewrite_storage_url(sb.storage.from_("avatars").get_public_url(path))
     sb.table("profiles").update({"avatar_url": url}).eq("id", current_user["id"]).execute()
     return {"avatar_url": url}
 @router.delete("/admin/{tutor_id}")
